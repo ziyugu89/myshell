@@ -1,0 +1,7 @@
+Operating System Course Design Notes
+=====================================
+1. Fork creates a child process
+2. Exec replaces process image
+3. Pipe enables inter-process communication
+4. Dup2 redirects file descriptors
+5. Waitpid reaps child processes

@@ -1,0 +1,6 @@
+The quick brown fox jumps over the lazy dog
+Linux is an open source operating system
+Shell is the interface between user and kernel
+Process management is a core function of OS
+File descriptors are used for I/O redirection
+Pipe connects stdout of one process to stdin of another

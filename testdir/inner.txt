@@ -1,0 +1,2 @@
+This file is inside testdir
+Used to test cd and ls commands
