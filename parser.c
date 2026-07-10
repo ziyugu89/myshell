@@ -9,6 +9,11 @@
 #include "executor.h"
 #include <glob.h>
 
+/*
+ * expand_tilde — 将 ~ 或 ~/path 展开为家目录路径
+ * 功能: 实现 Shell 的 ~ 路径展开。
+ * 实现: 读取 HOME 环境变量,对 "~" 和 "~/xxx" 两种形式做字符串替换。
+ */
 static void expand_tilde(char *arg)
 {
     if (arg[0] != '~')
@@ -27,6 +32,11 @@ static void expand_tilde(char *arg)
     arg[MAX_LINE - 1] = '\0';
 }
 
+/*
+ * trim_seg — 去除字符串首尾空白字符
+ * 功能: 复合命令拆分后清理每段命令两端的空格/制表符。
+ * 实现: 移动头指针并截断尾指针,返回有效内容起始地址。
+ */
 static char *trim_seg(char *s)
 {
     while (*s == ' ' || *s == '\t') s++;
@@ -36,6 +46,13 @@ static char *trim_seg(char *s)
     return s;
 }
 
+/*
+ * split_cmd — 引号感知的命令分词
+ * 功能: 把一行命令拆分为 argv/argc,支持单双引号、变量展开、反斜杠转义、
+ *       ~ 路径展开。
+ * 实现: 逐个字符扫描,单引号内原样复制,双引号/无引号内展开 $VAR,反斜杠
+ *       转义空格等,最后调用 expand_tilde。使用静态 arg_buf 存储参数。
+ */
 int split_cmd(const char *line, char **argv, int max_args)
 {
     int argc = 0;
@@ -144,6 +161,12 @@ int split_cmd(const char *line, char **argv, int max_args)
     return argc;
 }
 
+/*
+ * glob_expand_argv — 对 argv 中含通配符的参数做 glob 展开
+ * 功能: 实现 *.txt、test?.txt 等 glob 模式展开。
+ * 实现: 遍历 argv,对含 * ? [ 的参数调用 POSIX glob(),将匹配结果替换原参数;
+ *       无匹配或 glob 失败则保留原字符串。
+ */
 int glob_expand_argv(char **argv, int *argc)
 {
     static char glob_buf[MAX_ARGS][MAX_LINE];
@@ -182,6 +205,11 @@ int glob_expand_argv(char **argv, int *argc)
     return 0;
 }
 
+/*
+ * line_has_chain — 检测行中是否含复合命令操作符
+ * 功能: 判断是否需要走 chain_exec 复合命令路径。
+ * 实现: 维护引号状态,仅在引号外识别 ; / && / ||。
+ */
 int line_has_chain(const char *line)
 {
     int in_sq = 0, in_dq = 0;
@@ -197,6 +225,11 @@ int line_has_chain(const char *line)
     return 0;
 }
 
+/*
+ * line_has_heredoc — 检测行中是否含 Heredoc 语法 <<
+ * 功能: 判断是否需要先收集 Heredoc 内容。
+ * 实现: 维护引号状态,仅在引号外识别 "<<" 两个连续字符。
+ */
 int line_has_heredoc(const char *line)
 {
     int in_sq = 0, in_dq = 0;
@@ -209,6 +242,12 @@ int line_has_heredoc(const char *line)
     return 0;
 }
 
+/*
+ * heredoc_process — 收集 Heredoc 输入并替换为文件重定向
+ * 功能: 实现 << DELIM 多行输入,内容作为命令 stdin。
+ * 实现: 解析 DELIM;创建 /tmp/myshell_hd_<pid> 临时文件;交互读取用户输入
+ *       直到单独一行 DELIM;将原命令中的 "<< DELIM" 替换为 "< 临时文件"。
+ */
 int heredoc_process(char *line, int max_len)
 {
     char *p = line;
@@ -288,6 +327,11 @@ int heredoc_process(char *line, int max_len)
     return 0;
 }
 
+/*
+ * split_chain — 把复合命令拆分成多个段并记录操作符
+ * 功能: 为 chain_exec 准备命令段和 ; / && / || 关系。
+ * 实现: 维护引号状态,在操作符处写入 '\0',记录 ops 数组,返回段数。
+ */
 static int split_chain(char *line, char **segs, chain_op_t *ops, int max)
 {
     int n = 0;
@@ -323,6 +367,12 @@ static int split_chain(char *line, char **segs, chain_op_t *ops, int max)
     return n + 1;
 }
 
+/*
+ * chain_exec — 执行复合命令(; / && / ||)
+ * 功能: 按语义顺序执行多个子命令,实现短路逻辑。
+ * 实现: 先 split_chain 拆分;遍历各段,根据上一段退出码决定是否跳过当前段
+ *       (&& 前失败则跳,|| 前成功则跳),调用 execute_line 执行每段。
+ */
 int chain_exec(char *line)
 {
     char local[MAX_LINE];

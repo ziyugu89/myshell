@@ -13,11 +13,21 @@
 #include "shell.h"
 #include "history.h"
 
+/*
+ * history_start_idx — 计算当前有效历史的最旧逻辑下标
+ * 功能: 环形缓冲区满时,保证 history/!n 只访问最近 MAX_HISTORY 条。
+ * 实现: history_count > MAX_HISTORY 时返回 history_count - MAX_HISTORY,否则 0。
+ */
 int history_start_idx(void)
 {
     return (history_count > MAX_HISTORY) ? (history_count - MAX_HISTORY) : 0;
 }
 
+/*
+ * history_get_at — 按逻辑下标获取历史条目
+ * 功能: 支持 O(1) 访问任意有效历史命令。
+ * 实现: 先校验范围,再取 history_list[logical_idx % MAX_HISTORY]。
+ */
 const char *history_get_at(int logical_idx)
 {
     if (logical_idx < history_start_idx() || logical_idx >= history_count)
@@ -25,8 +35,10 @@ const char *history_get_at(int logical_idx)
     return history_list[logical_idx % MAX_HISTORY];
 }
 
-/* ============================================================================
- *  load_history — 启动时从 ~/.myshell_history 加载历史命令 (需求14)
+/*
+ * load_history — 启动时加载历史命令
+ * 功能: 从 ~/.myshell_history 读取上次会话保存的历史。
+ * 实现: 通过 HOME 环境变量构造路径,fgets 逐行读取,非空行加入 history_list。
  */
 void load_history(void)
 {
@@ -53,8 +65,10 @@ void load_history(void)
     fclose(fp);
 }
 
-/* ============================================================================
- *  save_history — 退出时覆盖写入所有历史记录 (需求14)
+/*
+ * save_history — 退出时保存历史命令
+ * 功能: 将本次会话历史覆盖写入 ~/.myshell_history。
+ * 实现: 只写最近 MAX_HISTORY 条(环形缓冲有效部分),fprintf 每行一条。
  */
 void save_history(void)
 {
@@ -74,11 +88,11 @@ void save_history(void)
     fclose(fp);
 }
 
-/* ============================================================================
- *  history_manage — 历史命令管理
- * ============================================================================
- *  处理 history 命令打印、!!、!n、!?keyword 查找,
- *  以及普通命令的历史记录添加。
+/*
+ * history_manage — 历史命令管理与展开
+ * 功能: 处理 history 命令、!!、!n、!?keyword,并将普通命令加入历史。
+ * 实现: strcmp/strncmp 判断命令形式;history 直接打印;!!/!n/!? 查找对应条目
+ *       复制到 out 并置 should_exec=1;普通非空命令追加到环形缓冲区。
  */
 void history_manage(const char *cmd, char *out, int *should_exec)
 {

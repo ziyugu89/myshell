@@ -12,12 +12,12 @@
 #include "shell.h"
 #include "alias.h"
 
-/* ============================================================================
- *  alias_handle — 别名管理与递归展开 (需求7)
- * ============================================================================
- *  处理 alias/unalias 命令, 以及别名的递归展开。
- *  返回值: 1=已作为 alias/unalias 命令处理完毕
- *          0=非 alias 命令, expanded 中存放展开结果
+/*
+ * alias_handle — 别名管理与递归展开
+ * 功能: 处理 alias/unalias 命令,或对普通命令行进行别名递归展开。
+ * 实现: 提取第一个词;若是 alias/unalias 则直接操作 alias_table 并返回 1;
+ *       否则查找别名表,命中则把别名值+后续参数拼成新行并递归(depth+1),
+ *       受 MAX_ALIAS_DEPTH 限制防死循环;未命中则原样复制。
  */
 int alias_handle(const char *line, char *expanded, int depth)
 {

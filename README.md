@@ -33,6 +33,44 @@ exit              # 或 Ctrl+D 退出
 
 ---
 
+## 注册为系统登录 Shell（可选）
+
+Linux 系统通过 `/etc/shells` 文件维护“合法登录 Shell”列表。若要让 myshell 被系统承认（例如通过 `chsh` 切换默认 Shell），需将其绝对路径写入该文件。
+
+### 步骤
+
+```bash
+# 1. 将 myshell 安装到系统目录（推荐 /usr/local/bin）
+sudo cp ./myshell /usr/local/bin/myshell
+sudo chmod +x /usr/local/bin/myshell
+
+# 2. 注册到 /etc/shells
+echo "/usr/local/bin/myshell" | sudo tee -a /etc/shells
+
+# 3. 查看注册结果
+cat /etc/shells
+```
+
+### 验证
+
+执行以下命令，若输出包含 `/usr/local/bin/myshell`，说明注册成功：
+
+```bash
+grep "myshell" /etc/shells
+```
+
+### 切换默认 Shell（可选）
+
+```bash
+chsh -s /usr/local/bin/myshell
+```
+
+重新登录后，默认 Shell 即为 myshell。
+
+**注意**：修改 `/etc/shells` 和切换默认 Shell 均需要 root 或当前用户密码权限。
+
+---
+
 ## 功能总览
 
 | 类别 | 功能 | 命令/语法 |
@@ -229,8 +267,15 @@ bg %1                       # 恢复编号 1 的作业到后台
 ```bash
 sudo ./myshell              # 如需执行真实挂载/卸载，需 root 权限
 mount                       # 显示当前挂载列表（读取 /proc/mounts）
-mount /dev/sdb1 /mnt/usb vfat   # 挂载设备到目录
-umount /mnt/usb             # 卸载挂载点
+mkdir -p /mnt/usb           # 挂载点目录必须事先存在
+
+# 方式 1：使用 tmpfs（无需真实设备，适合课堂演示）
+mount tmpfs /mnt/usb tmpfs
+mount | grep /mnt/usb
+umount /mnt/usb
+
+# 方式 2：挂载真实块设备（如 U 盘，设备路径需根据实际环境填写）
+# mount /dev/sdb1 /mnt/usb vfat
 ```
 
 **演示说明**：
@@ -557,12 +602,33 @@ sleep 2 &
 jobs
 # 等待 2 秒后，下一次提示符前会显示完成信息
 
-# 11. 命令类型识别
+# 11. 挂载管理
+#    无参数 mount 可查看当前挂载列表（无需 root）
+mount | head -5
+
+#    真实挂载/卸载需要 root 权限，且挂载点目录必须存在。
+#    课堂演示推荐用 tmpfs（无需真实设备）：
+# sudo ./myshell
+# mkdir -p /mnt/usb
+# mount tmpfs /mnt/usb tmpfs
+# mount | grep /mnt/usb
+# umount /mnt/usb
+#
+#    若挂载真实块设备（如 U 盘），需将 tmpfs 换成实际设备路径：
+# mount /dev/sdb1 /mnt/usb vfat
+
+# 12. 命令类型识别
 type export
 type ls
 
-# 12. 退出
+# 13. 退出 myshell
 exit
+
+# 14. 注册为系统登录 Shell（在 bash 中执行，非 myshell 内）
+# sudo cp ./myshell /usr/local/bin/myshell
+# sudo chmod +x /usr/local/bin/myshell
+# echo "/usr/local/bin/myshell" | sudo tee -a /etc/shells
+# grep "myshell" /etc/shells
 ```
 
 ---

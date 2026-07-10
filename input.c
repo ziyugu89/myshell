@@ -21,10 +21,10 @@ static int tab_pressed = 0;
 /* 光标位置变量: 用于 read_input 中方向键编辑 */
 static int cursor_pos = 0;
 
-/* ============================================================================
- *  refresh_line — 刷新当前输入行的显示
- * ============================================================================
- *  辅助函数: 方向键移动光标、历史翻阅后重绘整行
+/*
+ * refresh_line — 重绘当前输入行
+ * 功能: 方向键移动或历史翻阅后保持屏幕显示与光标位置正确。
+ * 实现: 用 \r 回行首,打印提示符+缓冲区,ANSI 清行,再按光标位置左移。
  */
 static void refresh_line(const char *prompt_str, const char *buf, int len, int cpos)
 {
@@ -36,11 +36,11 @@ static void refresh_line(const char *prompt_str, const char *buf, int len, int c
     fflush(stdout);
 }
 
-/* ============================================================================
- *  read_input — termios raw 模式逐字符读取 (增强版)
- * ============================================================================
- *  需求8: 上下方向键历史翻阅, 左右方向键光标移动
- *  方向键编码: 上\x1b[A 下\x1b[B 右\x1b[C 左\x1b[D
+/*
+ * read_input — termios raw 模式逐字符读取用户输入
+ * 功能: 实现交互式行编辑(方向键历史、光标移动、退格、Tab、Ctrl+C/D)。
+ * 实现: tcsetattr 关闭 ICANON/ECHO 进入 raw 模式;getchar 读字符;解析
+ *       ESC 序列处理方向键;维护 cursor_pos 实现插入/删除;非终端环境回退 fgets。
  */
 int read_input(char *buf, int max_len)
 {
@@ -195,8 +195,10 @@ int read_input(char *buf, int max_len)
     }
 }
 
-/* ============================================================================
- *  is_directory — 判断路径是否为目录(Tab补全内部使用)
+/*
+ * is_directory — 判断路径是否为目录
+ * 功能: Tab 补全时给目录候选追加 '/'。
+ * 实现: 调用 stat 并检查 S_ISDIR。
  */
 static int is_directory(const char *path)
 {
@@ -204,14 +206,11 @@ static int is_directory(const char *path)
     return (stat(path, &st) == 0 && S_ISDIR(st.st_mode));
 }
 
-/* ============================================================================
- *  tab_complete — Tab 补全逻辑 (增强版: 多级路径, 多列候选)
- * ============================================================================
- *  修复:
- *    1. cursor 指针现在正确更新 (原来 (void)cursor 直接丢弃)
- *    2. 内置命令(cd/echo/type 等)加入补全候选
- *    3. 多匹配时: 先补全公共前缀, 无扩展则直接列出候选(无需双击)
- *    4. 当前目录搜索也做去重
+/*
+ * tab_complete — Tab 补全逻辑
+ * 功能: 根据当前输入补全命令名、文件名或多级路径。
+ * 实现: 判断是否在补全命令名;命令名搜索内置命令+PATH+当前目录;文件名解析
+ *       目录部分与前缀并搜索;去重后单候选直接补全,多候选补公共前缀或列候选。
  */
 void tab_complete(const char *prefix, char *buf, int *len, int *cursor)
 {

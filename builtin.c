@@ -19,11 +19,19 @@ const char *const shell_builtin_names[] = {
     NULL
 };
 
+/*
+ * builtin_cmd — 内置命令分发器
+ * 功能: 根据 argv[0] 识别并执行对应内置命令; 若非内置命令返回 -1。
+ * 实现: 用 strcmp 链式判断 argv[0], 分别调用 chdir/getcwd/printf/setenv/
+ *       exit 等系统调用/库函数完成具体功能; history/alias/unalias 已在
+ *       流程早期处理, 这里仅返回 0 占位避免被误判为外部命令。
+ */
 int builtin_cmd(char **argv, int argc, int bg)
 {
     (void)bg;
     if (argc == 0) return -1;
 
+    /* cd: 切换当前工作目录(必须在父进程执行,不能fork) */
     if (strcmp(argv[0], "cd") == 0) {
         const char *dir;
         static char cd_path[MAX_LINE];
@@ -64,6 +72,7 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
+    /* pwd: 调用 getcwd 输出当前工作目录 */
     if (strcmp(argv[0], "pwd") == 0) {
         char cwd[MAX_LINE];
         if (getcwd(cwd, sizeof(cwd))) {
@@ -74,6 +83,7 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 1;
     }
 
+    /* echo: 输出参数,支持 -n 和 \\n/\\t/\\\\ 转义 */
     if (strcmp(argv[0], "echo") == 0) {
         int start = 1;
         int no_nl = 0;
@@ -107,6 +117,7 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
+    /* type: 判断命令类型(别名→内置→外部),外部命令遍历PATH检查X_OK */
     if (strcmp(argv[0], "type") == 0) {
         if (argc < 2) {
             printf("myshell: type: 用法: type 命令名\n");
@@ -145,6 +156,7 @@ int builtin_cmd(char **argv, int argc, int bg)
         return found[0] ? 0 : 1;
     }
 
+    /* exit: 保存历史后按指定退出码终止Shell进程 */
     if (strcmp(argv[0], "exit") == 0) {
         int code = (argc >= 2) ? atoi(argv[1]) : 0;
         save_history();
@@ -152,6 +164,7 @@ int builtin_cmd(char **argv, int argc, int bg)
         exit(code);
     }
 
+    /* export: 设置/查看环境变量,通过 setenv 影响当前进程及子进程 */
     if (strcmp(argv[0], "export") == 0) {
         if (argc < 2) {
             for (char **e = environ; e && *e; e++)
@@ -173,6 +186,7 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
+    /* unset: 删除环境变量,调用 unsetenv */
     if (strcmp(argv[0], "unset") == 0) {
         if (argc < 2) {
             printf("myshell: unset: 用法: unset 变量名\n");
@@ -183,6 +197,7 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
+    /* jobs/fg/bg: 委托给 background.c 的作业控制函数 */
     if (strcmp(argv[0], "jobs") == 0)
         return builtin_jobs(argv, argc);
     if (strcmp(argv[0], "fg") == 0)
@@ -190,6 +205,7 @@ int builtin_cmd(char **argv, int argc, int bg)
     if (strcmp(argv[0], "bg") == 0)
         return builtin_bg(argv, argc);
 
+    /* mount/umount: 委托给 mount.c 的挂载管理函数 */
     if (strcmp(argv[0], "mount") == 0) {
         handle_mount(argv, argc);
         return 0;
@@ -199,6 +215,7 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
+    /* history/alias/unalias 已在 process_command 流程早期处理,此处占位返回 */
     if (strcmp(argv[0], "history") == 0 ||
         strcmp(argv[0], "alias") == 0 ||
         strcmp(argv[0], "unalias") == 0)

@@ -12,11 +12,11 @@
 #include "shell.h"
 #include "utils.h"
 
-/* ============================================================================
- *  get_prompt_str — 获取提示符字符串
- * ============================================================================
- *  将提示符格式化为字符串, 供 read_input 中刷新行时复用。
- *  需求12: root 显示 #, 普通用户显示 $
+/*
+ * get_prompt_str — 生成提示符字符串
+ * 功能: 构造 [user@host dir]$/# 形式的提示符,并把家目录前缀缩写成 ~。
+ * 实现: getpwuid 取用户名,gethostname 取主机名,getcwd 取当前目录;比较并
+ *       替换家目录前缀;根据 getuid 选择 # 或 $。
  */
 void get_prompt_str(char *out, int max_len)
 {
@@ -44,8 +44,10 @@ void get_prompt_str(char *out, int max_len)
              pw ? pw->pw_name : "user", hostname, cwd, pc);
 }
 
-/* ============================================================================
- *  print_prompt — 打印提示符
+/*
+ * print_prompt — 打印提示符
+ * 功能: 向终端输出当前提示符。
+ * 实现: 调用 get_prompt_str 后 printf 并 fflush。
  */
 void print_prompt(void)
 {

@@ -26,6 +26,14 @@ int alias_count = 0;
 struct bg_job_msg bg_msg_queue[MAX_BG_MSG];
 int bg_msg_count = 0;
 
+/*
+ * process_command — 命令处理流水线
+ * 功能: 按固定顺序处理用户输入的一行命令: 历史展开 → 别名展开 →
+ *       Heredoc 收集 → 复合命令拆分 → 单条命令执行。
+ * 实现: 依次调用 history_manage、alias_handle、line_has_heredoc/
+ *       heredoc_process、line_has_chain/chain_exec 或 execute_line。
+ *       若历史展开返回 should_exec, 用展开结果替换原 line 后继续处理。
+ */
 static void process_command(char *line)
 {
     char expanded[MAX_LINE], hist_out[MAX_LINE];
@@ -60,6 +68,13 @@ static void process_command(char *line)
         execute_line(cmd);
 }
 
+/*
+ * main — Shell 入口与主循环
+ * 功能: 初始化进程组、信号、环境变量和历史, 进入交互循环读取并执行命令。
+ * 实现: setpgid+tcsetpgrp 接管终端; 忽略 SIGINT/SIGTSTP/SIGTTOU/SIGTTIN;
+ *       注册 SIGCHLD; load_history; 循环 reap_children/flush_bg_messages/
+ *       print_prompt/read_input/process_command, 退出时 save_history。
+ */
 int main(void)
 {
     char input_buf[MAX_LINE];

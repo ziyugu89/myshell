@@ -11,6 +11,11 @@
 #include "builtin.h"
 #include "background.h"
 
+/*
+ * line_has_pipe — 检测行中是否存在管道符 |
+ * 功能: 判断一行命令是否需要走 pipe_exec 管道执行路径。
+ * 实现: 遍历字符串,维护单双引号状态,仅在引号外识别单独的 '|'。
+ */
 static int line_has_pipe(const char *line)
 {
     int in_sq = 0, in_dq = 0;
@@ -26,6 +31,11 @@ static int line_has_pipe(const char *line)
     return 0;
 }
 
+/*
+ * child_restore_signals — 子进程恢复默认信号行为
+ * 功能: 让外部命令子进程对 Ctrl+C/Ctrl+Z 等信号恢复默认响应。
+ * 实现: 将 SIGINT/SIGTSTP/SIGTTOU/SIGTTIN 重置为 SIG_DFL。
+ */
 static void child_restore_signals(void)
 {
     signal(SIGINT, SIG_DFL);
@@ -34,6 +44,11 @@ static void child_restore_signals(void)
     signal(SIGTTIN, SIG_DFL);
 }
 
+/*
+ * wait_status_to_code — 将 waitpid 状态转换为退出码
+ * 功能: 正常退出返回 exit code,被信号终止返回 128+signal。
+ * 实现: 使用 WIFEXITED/WEXITSTATUS/WIFSIGNALED/WTERMSIG 宏判断。
+ */
 static int wait_status_to_code(int status)
 {
     if (WIFEXITED(status)) return WEXITSTATUS(status);
@@ -41,6 +56,14 @@ static int wait_status_to_code(int status)
     return 1;
 }
 
+/*
+ * run_simple — 执行单条命令(内置或外部)
+ * 功能: 完成重定向应用、内置命令执行、外部命令 fork/execvp、
+ *       前台/后台进程组管理。
+ * 实现: 有重定向时先 dup 保存原 fd,执行内置命令后恢复;外部命令 fork 后
+ *       子进程 child_restore_signals+redirect_apply+execvp;父进程通过
+ *       setpgid+tcsetpgrp+waitpid 管理前台作业,后台则加入作业表立即返回。
+ */
 static int run_simple(char **argv, int argc, int bg, redirect_t *rd)
 {
     int saved_in = -1, saved_out = -1, saved_err = -1;
@@ -111,6 +134,14 @@ static int run_simple(char **argv, int argc, int bg, redirect_t *rd)
     return wait_status_to_code(wst);
 }
 
+/*
+ * pipe_exec — 多级管道执行
+ * 功能: 创建 N-1 个管道并 fork N 个子进程,把每个命令段的 stdin/stdout
+ *       通过管道连接起来,支持内置命令参与管道和每段独立重定向。
+ * 实现: 按引号外的 '|' 拆分命令段;pipe 创建管道;逐段 fork,子进程 dup2
+ *       连接前后管道、应用重定向,然后 builtin_cmd/execvp;父进程关闭所有
+ *       管道 fd 后逐个 waitpid,支持前台 tcsetpgrp 切换和后台作业加入。
+ */
 static int pipe_exec(char *line, int bg)
 {
     char *cmd_segs[MAX_ARGS];
@@ -260,6 +291,12 @@ static int pipe_exec(char *line, int bg)
     return status;
 }
 
+/*
+ * execute_line — 单条命令执行入口
+ * 功能: 处理一行命令的后台检测、分词、glob、重定向解析,并派发执行。
+ * 实现: 调用 bg_run_line 识别 &,含管道则走 pipe_exec,否则 split_cmd →
+ *       glob_expand_argv → bg_run → redirect_parse → run_simple。
+ */
 int execute_line(char *line)
 {
     while (*line == ' ' || *line == '\t') line++;

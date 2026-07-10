@@ -7,6 +7,11 @@
 #include "shell.h"
 #include "redirect.h"
 
+/*
+ * redirect_init — 初始化重定向结构体
+ * 功能: 将 redirect_t 所有字段清零/置 NULL。
+ * 实现: 直接赋值 NULL 和 0。
+ */
 void redirect_init(redirect_t *r)
 {
     r->in_file = NULL;
@@ -17,6 +22,11 @@ void redirect_init(redirect_t *r)
     r->err_to_out = 0;
 }
 
+/*
+ * remove_argv_at — 从 argv 中移除连续 count 个元素
+ * 功能: 解析重定向后把操作符和文件名从参数列表中删除。
+ * 实现: 从 idx 开始用后序元素覆盖,更新 argc 并在末尾置 NULL。
+ */
 static void remove_argv_at(char **argv, int *argc, int idx, int count)
 {
     for (int j = idx; j + count < *argc; j++)
@@ -25,6 +35,12 @@ static void remove_argv_at(char **argv, int *argc, int idx, int count)
     argv[*argc] = NULL;
 }
 
+/*
+ * redirect_parse — 从 argv 中解析重定向操作符
+ * 功能: 识别 < > >> 2> 2>> 2>&1,提取文件名并从 argv 中移除。
+ * 实现: 遍历 argv,用 strcmp/strncmp 匹配操作符,支持空格/无空格两种写法;
+ *       调用 remove_argv_at 删除已解析的元素,填充 redirect_t。
+ */
 int redirect_parse(char **argv, int *argc, redirect_t *r)
 {
     redirect_init(r);
@@ -101,6 +117,12 @@ int redirect_parse(char **argv, int *argc, redirect_t *r)
     return 0;
 }
 
+/*
+ * redirect_apply — 在当前进程应用重定向
+ * 功能: 把 stdin/stdout/stderr 重新绑定到指定文件或彼此。
+ * 实现: open 打开文件,dup2 复制到 STDIN_FILENO/STDOUT_FILENO/STDERR_FILENO,
+ *       关闭临时 fd;2>&1 通过 dup2(stdout,stderr) 合并。
+ */
 int redirect_apply(const redirect_t *r)
 {
     if (r->in_file) {
@@ -139,6 +161,11 @@ int redirect_apply(const redirect_t *r)
     return 0;
 }
 
+/*
+ * redirect_apply_with_save — 保存原 fd 后应用重定向
+ * 功能: 供内置命令使用,保证重定向不影响 Shell 父进程后续 I/O。
+ * 实现: 用 dup 保存原 stdin/stdout/stderr,然后调用 redirect_apply。
+ */
 int redirect_apply_with_save(const redirect_t *r,
                              int *saved_in, int *saved_out, int *saved_err)
 {
@@ -149,6 +176,11 @@ int redirect_apply_with_save(const redirect_t *r,
     return redirect_apply(r);
 }
 
+/*
+ * redirect_restore — 恢复之前保存的文件描述符
+ * 功能: 内置命令执行完毕后恢复原始 stdin/stdout/stderr。
+ * 实现: fflush 后 dup2(saved_fd, 标准fd) 并关闭 saved_fd。
+ */
 void redirect_restore(int saved_in, int saved_out, int saved_err)
 {
     fflush(stdout);

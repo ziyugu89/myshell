@@ -11,11 +11,21 @@ struct job_entry job_table[MAX_JOBS];
 int job_count = 0;
 int job_next_id = 1;
 
+/*
+ * sigchld_handler — SIGCHLD 信号处理器
+ * 功能: 子进程结束时唤醒主循环进行回收。
+ * 实现: 空函数体,仅用于中断可能阻塞的 waitpid 轮询;实际回收由 reap_children 完成。
+ */
 void sigchld_handler(int sig)
 {
     (void)sig;
 }
 
+/*
+ * job_find_by_id — 按作业编号查找作业
+ * 功能: fg/bg 命令通过 %N 定位作业。
+ * 实现: 线性遍历 job_table。
+ */
 struct job_entry *job_find_by_id(int id)
 {
     for (int i = 0; i < job_count; i++)
@@ -24,6 +34,11 @@ struct job_entry *job_find_by_id(int id)
     return NULL;
 }
 
+/*
+ * job_find_by_pgid — 按进程组 ID 查找作业
+ * 功能: 通过进程组定位整个管道作业。
+ * 实现: 线性遍历 job_table 比较 pgid。
+ */
 struct job_entry *job_find_by_pgid(pid_t pgid)
 {
     for (int i = 0; i < job_count; i++)
@@ -32,6 +47,11 @@ struct job_entry *job_find_by_pgid(pid_t pgid)
     return NULL;
 }
 
+/*
+ * job_add — 向作业表添加新作业
+ * 功能: 后台进程或停止的前台作业加入管理。
+ * 实现: 在 job_table 末尾填充 id/pgid/pids/cmd/stopped,并递增 job_next_id。
+ */
 void job_add(pid_t pgid, const pid_t *pids, int npids, const char *cmd, int stopped)
 {
     if (job_count >= MAX_JOBS) return;
@@ -46,6 +66,11 @@ void job_add(pid_t pgid, const pid_t *pids, int npids, const char *cmd, int stop
     j->stopped = stopped;
 }
 
+/*
+ * job_mark_stopped — 将包含指定 PID 的作业标记为已停止
+ * 功能: 前台作业被 Ctrl+Z 停止时更新作业状态。
+ * 实现: 遍历作业表找到 pid 所属作业,设置 stopped=1。
+ */
 void job_mark_stopped(pid_t pid)
 {
     for (int i = 0; i < job_count; i++) {
@@ -58,6 +83,11 @@ void job_mark_stopped(pid_t pid)
     }
 }
 
+/*
+ * job_remove_by_pgid — 按进程组删除已完成作业
+ * 功能: 作业所有进程结束后清理作业表。
+ * 实现: 找到匹配 pgid 的作业,用末尾作业覆盖并减少 job_count。
+ */
 void job_remove_by_pgid(pid_t pgid)
 {
     for (int i = 0; i < job_count; i++) {
@@ -69,6 +99,11 @@ void job_remove_by_pgid(pid_t pgid)
     }
 }
 
+/*
+ * job_find_by_pid — 按进程 PID 查找所属作业
+ * 功能: reap_children 回收子进程时判断其是否属于某个作业。
+ * 实现: 遍历每个作业的 pids 数组。
+ */
 static struct job_entry *job_find_by_pid(pid_t pid)
 {
     for (int i = 0; i < job_count; i++) {
@@ -80,6 +115,12 @@ static struct job_entry *job_find_by_pid(pid_t pid)
     return NULL;
 }
 
+/*
+ * reap_children — 非阻塞回收所有已结束子进程
+ * 功能: 回收后台/停止后终止的子进程,生成完成消息。
+ * 实现: 循环 waitpid(-1, &status, WNOHANG);若属于作业且全部结束则入队作业完成
+ *       消息,否则入队普通后台进程消息;信号+轮询双重保障防漏收。
+ */
 void reap_children(void)
 {
     int status;
@@ -120,6 +161,12 @@ void reap_children(void)
     }
 }
 
+/*
+ * flush_bg_messages — 统一输出后台完成消息
+ * 功能: 避免后台进程结束提示打断用户当前输入。
+ * 实现: 主循环每次打印提示符前遍历 bg_msg_queue,根据 type 输出完成/终止信息,
+ *       然后清空队列。
+ */
 void flush_bg_messages(void)
 {
     for (int i = 0; i < bg_msg_count; i++) {
@@ -136,6 +183,11 @@ void flush_bg_messages(void)
     bg_msg_count = 0;
 }
 
+/*
+ * bg_run — 从分词后的 argv 中检测后台标志 &
+ * 功能: 识别并移除 argv 末尾的 &。
+ * 实现: 检查 argv[*argc-1] 是否为 "&",是则 argc-- 并返回 1。
+ */
 int bg_run(char **argv, int *argc)
 {
     if (*argc > 0 && strcmp(argv[*argc - 1], "&") == 0) {
@@ -146,6 +198,11 @@ int bg_run(char **argv, int *argc)
     return 0;
 }
 
+/*
+ * bg_run_line — 从原始行末尾检测后台标志 &
+ * 功能: 在分词前快速判断是否为后台命令,避免把 && 误判为 &。
+ * 实现: 跳过尾部空白,检查最后一个非空字符是否为 &,且前一个字符不是 &。
+ */
 int bg_run_line(char *line)
 {
     size_t len = strlen(line);
@@ -162,6 +219,11 @@ int bg_run_line(char *line)
     return 0;
 }
 
+/*
+ * parse_job_id — 解析 fg/bg 的作业编号参数
+ * 功能: 支持 %N 或 N 形式。
+ * 实现: 可选跳过前导 %,atoi 转换并校验正整数。
+ */
 static int parse_job_id(const char *arg, int *id)
 {
     if (!arg) return -1;
@@ -171,6 +233,11 @@ static int parse_job_id(const char *arg, int *id)
     return (*id > 0) ? 0 : -1;
 }
 
+/*
+ * builtin_jobs — 实现 jobs 内置命令
+ * 功能: 输出当前作业表中所有作业的状态。
+ * 实现: 遍历 job_table,打印 [id] 运行中/已停止 命令 (pgid)。
+ */
 int builtin_jobs(char **argv, int argc)
 {
     (void)argv; (void)argc;
@@ -188,6 +255,12 @@ int builtin_jobs(char **argv, int argc)
     return 0;
 }
 
+/*
+ * builtin_fg — 实现 fg 内置命令
+ * 功能: 将后台/停止作业调到前台运行并等待结束。
+ * 实现: 解析作业号找到 job;若已停止则 SIGCONT;tcsetpgrp 交出终端;
+ *       waitpid 等待每个子进程;结束后收回终端并移除作业。
+ */
 int builtin_fg(char **argv, int argc)
 {
     int id = 0;
@@ -228,6 +301,11 @@ int builtin_fg(char **argv, int argc)
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
+/*
+ * builtin_bg — 实现 bg 内置命令
+ * 功能: 让已停止的作业在后台继续运行。
+ * 实现: 解析作业号找到已停止 job,向其进程组发送 SIGCONT,标记为运行中。
+ */
 int builtin_bg(char **argv, int argc)
 {
     int id = 0;
