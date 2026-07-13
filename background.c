@@ -1,6 +1,33 @@
 /*
  * ============================================================================
- *  background.c — 后台进程与作业控制
+ *  background.c — 后台进程与作业控制模块
+ * ============================================================================
+ *  操作系统课程设计作业
+ *
+ *  【文件定位】
+ *    后台作业管理层，实现 jobs/fg/bg 命令和子进程回收机制。
+ *    管理作业表(job_table)和后台完成消息队列(bg_msg_queue)。
+ *
+ *  【与 Linux 内核的关系 — 核心系统调用详解】
+ *    - waitpid(-1, &status, WNOHANG) : 内核 sys_wait4
+ *      非阻塞回收所有已结束的子进程，WNOHANG 避免阻塞
+ *      信号不排队，用 while 循环防漏收
+ *    - kill(-pgid, SIGCONT) : 内核 sys_kill
+ *      负 PID 表示向整个进程组发信号，用于恢复停止的作业
+ *    - tcsetpgrp() : 内核 ioctl(TIOCSPGRP)
+ *      fg 命令时将终端控制权交给作业进程组
+ *    - waitpid(pid, &status, 0) : 内核 sys_wait4
+ *      fg 命令阻塞等待作业所有进程结束
+ *    - WIFEXITED/WEXITSTATUS/WIFSIGNALED/WTERMSIG : 内核状态字解析宏
+ *
+ *  【核心功能】
+ *    sigchld_handler()  — SIGCHLD 信号处理器(空函数体，仅用于唤醒)
+ *    reap_children()    — 非阻塞回收所有已结束子进程
+ *    flush_bg_messages()— 延迟输出后台完成消息
+ *    bg_run/bg_run_line — 检测后台标志 &
+ *    builtin_jobs/fg/bg — 作业控制内置命令实现
+ *
+ *  @author  操作系统课程设计
  * ============================================================================
  */
 
@@ -13,8 +40,11 @@ int job_next_id = 1;
 
 /*
  * sigchld_handler — SIGCHLD 信号处理器
- * 功能: 子进程结束时唤醒主循环进行回收。
- * 实现: 空函数体,仅用于中断可能阻塞的 waitpid 轮询;实际回收由 reap_children 完成。
+ * 功能: 子进程结束时内核发送 SIGCHLD 信号唤醒主循环。
+ * 【与内核的关系】
+ *   内核在子进程退出时向其父进程发送 SIGCHLD 信号
+ *   这里只是空函数体，实际回收由 reap_children 完成
+ *   信号的作用是中断可能阻塞的 getchar/waitpid
  */
 void sigchld_handler(int sig)
 {
@@ -117,14 +147,23 @@ static struct job_entry *job_find_by_pid(pid_t pid)
 
 /*
  * reap_children — 非阻塞回收所有已结束子进程
- * 功能: 回收后台/停止后终止的子进程,生成完成消息。
- * 实现: 循环 waitpid(-1, &status, WNOHANG);若属于作业且全部结束则入队作业完成
- *       消息,否则入队普通后台进程消息;信号+轮询双重保障防漏收。
+ * 功能: 回收后台/停止后终止的子进程，生成完成消息。
+ * 【系统调用】waitpid(-1, &status, WNOHANG) → 内核 sys_wait4
+ *   -1 表示等待任意子进程
+ *   WNOHANG 表示非阻塞，没有已结束子进程时立即返回 0
+ *   while 循环: 因为信号不排队(多个子进程同时结束只发一个 SIGCHLD)，
+ *   必须循环回收直到没有更多已结束子进程
+ * 【状态解析】
+ *   WIFEXITED(status)  : 内核标记是否正常退出
+ *   WEXITSTATUS(status): 内核存储的退出码
+ *   WIFSIGNALED(status): 内核标记是否被信号杀死
+ *   WTERMSIG(status)   : 内核存储的信号编号
  */
 void reap_children(void)
 {
     int status;
     pid_t pid;
+    /* 【系统调用】waitpid() → 内核 sys_wait4，非阻塞回收 */
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         struct job_entry *job = job_find_by_pid(pid);
         if (job) {
@@ -258,8 +297,11 @@ int builtin_jobs(char **argv, int argc)
 /*
  * builtin_fg — 实现 fg 内置命令
  * 功能: 将后台/停止作业调到前台运行并等待结束。
- * 实现: 解析作业号找到 job;若已停止则 SIGCONT;tcsetpgrp 交出终端;
- *       waitpid 等待每个子进程;结束后收回终端并移除作业。
+ * 【系统调用】
+ *   - kill(-pgid, SIGCONT) → 内核 sys_kill，向进程组发送 SIGCONT 恢复运行
+ *   - tcsetpgrp() → 内核 ioctl(TIOCSPGRP)，将终端控制权交给作业进程组
+ *   - waitpid() → 内核 sys_wait4，阻塞等待作业所有进程结束
+ *   - tcsetpgrp(getpgrp()) → 收回终端控制权
  */
 int builtin_fg(char **argv, int argc)
 {
@@ -280,20 +322,25 @@ int builtin_fg(char **argv, int argc)
         }
     }
 
+    /* 【系统调用】kill(-pgid, SIGCONT) → 内核 sys_kill
+     * 负 PID 表示向整个进程组发信号，恢复被 Ctrl+Z 停止的作业 */
     if (job->stopped) {
         kill(-job->pgid, SIGCONT);
         job->stopped = 0;
     }
 
+    /* 【系统调用】tcsetpgrp() → 内核 ioctl(TIOCSPGRP)，交出终端控制权 */
     if (isatty(STDIN_FILENO))
         tcsetpgrp(STDIN_FILENO, job->pgid);
 
     int status = 0;
     for (int k = 0; k < job->npids; k++) {
+        /* 【系统调用】waitpid() → 内核 sys_wait4，阻塞等待 */
         if (job->pids[k] > 0)
             waitpid(job->pids[k], &status, 0);
     }
 
+    /* 【系统调用】tcsetpgrp(getpgrp()) → 内核 ioctl(TIOCSPGRP)，收回终端 */
     if (isatty(STDIN_FILENO))
         tcsetpgrp(STDIN_FILENO, getpgrp());
 
@@ -304,7 +351,9 @@ int builtin_fg(char **argv, int argc)
 /*
  * builtin_bg — 实现 bg 内置命令
  * 功能: 让已停止的作业在后台继续运行。
- * 实现: 解析作业号找到已停止 job,向其进程组发送 SIGCONT,标记为运行中。
+ * 【系统调用】kill(-pgid, SIGCONT) → 内核 sys_kill
+ *   向整个进程组发送 SIGCONT 信号，内核将停止状态的进程恢复运行
+ *   与 fg 不同，bg 不交出终端控制权，也不等待作业结束
  */
 int builtin_bg(char **argv, int argc)
 {

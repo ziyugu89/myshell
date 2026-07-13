@@ -4,8 +4,27 @@
  * ============================================================================
  *  操作系统课程设计作业
  *
- *  功能: history_manage(历史命令管理)、load_history(加载)、
- *         save_history(保存)、!n/!!/!?查找展开
+ *  【文件定位】
+ *    状态持久层，负责历史命令的存储与展开。
+ *    使用环形数组实现 O(1) 访问，持久化到 ~/.myshell_history。
+ *
+ *  【与 Linux 内核的关系】
+ *    - fopen/fclose : 内核 sys_open/sys_close，通过 VFS 打开文件
+ *    - fgets/fprintf: 内核 read/write，通过 VFS 读写文件内容
+ *    - getenv("HOME"): 读取环境变量，HOME 由登录时内核/pam 设置
+ *    本模块不涉及进程控制类系统调用，主要做字符串操作和文件 I/O
+ *
+ *  【核心功能】
+ *    history_manage()    — 历史管理入口: history/!!/!n/!?kw/添加历史
+ *    load_history()      — 启动时从文件加载历史
+ *    save_history()      — 退出时保存历史到文件
+ *    history_start_idx() — 环形缓冲区最旧有效下标
+ *    history_get_at()    — 按逻辑下标 O(1) 访问
+ *
+ *  【环形缓冲区原理】
+ *    history_list[count % MAX_HISTORY] 取模索引
+ *    满时自动覆盖最旧条目，只保留最近 MAX_HISTORY 条
+ *
  *  @author  胥思吉 23013152
  * ============================================================================
  */
@@ -38,7 +57,11 @@ const char *history_get_at(int logical_idx)
 /*
  * load_history — 启动时加载历史命令
  * 功能: 从 ~/.myshell_history 读取上次会话保存的历史。
- * 实现: 通过 HOME 环境变量构造路径,fgets 逐行读取,非空行加入 history_list。
+ * 【系统调用】
+ *   - fopen() → 内核 sys_open，打开文件获取 fd
+ *   - fgets() → 内核 read，逐行读取文件内容
+ *   - fclose() → 内核 sys_close，关闭文件
+ *   - getenv("HOME") → 读取环境变量构造路径
  */
 void load_history(void)
 {
@@ -68,7 +91,10 @@ void load_history(void)
 /*
  * save_history — 退出时保存历史命令
  * 功能: 将本次会话历史覆盖写入 ~/.myshell_history。
- * 实现: 只写最近 MAX_HISTORY 条(环形缓冲有效部分),fprintf 每行一条。
+ * 【系统调用】
+ *   - fopen("w") → 内核 sys_open(O_WRONLY|O_CREAT|O_TRUNC)
+ *   - fprintf() → 内核 write，写入文件
+ *   - fclose() → 内核 sys_close
  */
 void save_history(void)
 {
@@ -90,9 +116,15 @@ void save_history(void)
 
 /*
  * history_manage — 历史命令管理与展开
- * 功能: 处理 history 命令、!!、!n、!?keyword,并将普通命令加入历史。
- * 实现: strcmp/strncmp 判断命令形式;history 直接打印;!!/!n/!? 查找对应条目
- *       复制到 out 并置 should_exec=1;普通非空命令追加到环形缓冲区。
+ * 功能: 处理 history 命令、!!、!n、!?keyword，并将普通命令加入历史。
+ * 【实现逻辑】
+ *   - "history"    : 打印全部历史(环形缓冲区有效部分)
+ *   - "history n"  : 打印最近 n 条
+ *   - "!!"         : 执行上一条命令，复制到 out 并置 should_exec=1
+ *   - "!n"         : 按编号执行，O(1) 定位 (n-1) % MAX_HISTORY
+ *   - "!?keyword"  : 搜索含关键词的历史(从新到旧)
+ *   - 普通命令     : 追加到环形缓冲区
+ * 纯用户态逻辑，不涉及内核系统调用
  */
 void history_manage(const char *cmd, char *out, int *should_exec)
 {

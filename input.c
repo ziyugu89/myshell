@@ -4,8 +4,25 @@
  * ============================================================================
  *  操作系统课程设计作业
  *
- *  功能: read_input(termios raw 模式逐字符读取)、
- *         tab_complete(Tab 补全逻辑)、refresh_line(刷新当前输入行)
+ *  【文件定位】
+ *    终端输入层，是与终端硬件特性耦合最深的模块。
+ *    负责：行编辑、方向键历史翻阅、Tab 补全、Ctrl+C/D 处理。
+ *
+ *  【与 Linux 内核的关系】
+ *    - tcgetattr/tcsetattr : 内核 tty 子系统的 ioctl(TCGETS/TCSETS)
+ *      用于切换终端的 raw/cooked 模式，这是 Shell 实现行编辑的基础
+ *    - ICANON 标志: 内核行缓冲模式标志，关闭后内核不再等回车才返回输入
+ *    - ECHO 标志  : 内核自动回显标志，关闭后 Shell 自己控制屏幕输出
+ *    - isatty()   : 内核 ioctl(TCGETS) 判断文件描述符是否连接终端设备
+ *    - opendir/readdir/closedir : 目录遍历，底层调用内核 getdents64 系统调用
+ *    - stat()     : 内核 sys_newstat，判断文件是否为目录
+ *    - getenv("PATH") : 读取环境变量，PATH 决定命令搜索路径
+ *
+ *  【核心功能】
+ *    read_input()  — 切换终端 raw 模式，逐字符读取，支持方向键/退格/Tab/Ctrl
+ *    tab_complete() — 补全命令名(内置+PATH+当前目录)或文件名/多级路径
+ *    refresh_line() — ANSI 转义序列重绘输入行
+ *
  *  @author  胥思吉 23013152
  * ============================================================================
  */
@@ -24,7 +41,8 @@ static int cursor_pos = 0;
 /*
  * refresh_line — 重绘当前输入行
  * 功能: 方向键移动或历史翻阅后保持屏幕显示与光标位置正确。
- * 实现: 用 \r 回行首,打印提示符+缓冲区,ANSI 清行,再按光标位置左移。
+ * 实现: \r 回行首 → 打印提示符+缓冲区 → \033[K 清行尾 → \033[nD 左移光标
+ * 【与内核的关系】纯用户态 ANSI 转义序列输出，由终端驱动解释执行
  */
 static void refresh_line(const char *prompt_str, const char *buf, int len, int cpos)
 {
@@ -39,8 +57,28 @@ static void refresh_line(const char *prompt_str, const char *buf, int len, int c
 /*
  * read_input — termios raw 模式逐字符读取用户输入
  * 功能: 实现交互式行编辑(方向键历史、光标移动、退格、Tab、Ctrl+C/D)。
- * 实现: tcsetattr 关闭 ICANON/ECHO 进入 raw 模式;getchar 读字符;解析
- *       ESC 序列处理方向键;维护 cursor_pos 实现插入/删除;非终端环境回退 fgets。
+ *
+ * 【与 Linux 内核的关系】
+ *   - isatty(STDIN_FILENO): 内核 ioctl(TCGETS)，检查 stdin 是否连接终端设备
+ *   - tcgetattr(): 内核 ioctl(TCGETS)，获取当前终端属性(struct termios)
+ *   - tcsetattr(): 内核 ioctl(TCSETS)，设置终端属性
+ *     关闭 ICANON: 内核不再做行缓冲，每个字符立即返回给进程
+ *     关闭 ECHO  : 内核不再自动回显输入字符，由 Shell 自己控制显示
+ *     VMIN=1/VTIME=0: 内核 read 至少等 1 个字符才返回(阻塞式)
+ *   - getchar(): 底层通过内核 read(0, buf, 1) 读取一个字符
+ *
+ * 【实现流程】
+ *   1. 检测是否终端，非终端回退 fgets
+ *   2. 保存原始终端属性，设置 raw 模式
+ *   3. 循环 getchar 读字符，根据键值处理：
+ *      - 回车: 结束输入，恢复终端属性
+ *      - Ctrl+C: 清空缓冲区，返回空行
+ *      - Ctrl+D: 空行时返回 -1(表示 EOF/退出)
+ *      - 退格: memmove 删除光标前字符
+ *      - ESC[A/B/C/D: 方向键(上/下翻阅历史，左/右移动光标)
+ *      - Tab: 调用 tab_complete 补全
+ *      - 普通字符: 在光标位置插入
+ *   4. 返回前恢复终端属性
  */
 int read_input(char *buf, int max_len)
 {
@@ -48,7 +86,8 @@ int read_input(char *buf, int max_len)
     int len = 0, ch;
     cursor_pos = 0;
 
-    /* 非终端输入: 直接 fgets */
+    /* 非终端输入(如管道或文件重定向): 回退到 fgets 模式
+     * 【系统调用】isatty() → 内核 ioctl(TCGETS) */
     if (!isatty(STDIN_FILENO)) {
         if (fgets(buf, max_len, stdin) == NULL) return -1;
         len = (int)strlen(buf);
@@ -58,6 +97,8 @@ int read_input(char *buf, int max_len)
         return len;
     }
 
+    /* 【系统调用】tcgetattr() → 内核 ioctl(TCGETS)
+     * 获取当前终端属性，保存为 orig 以便后续恢复 */
     if (tcgetattr(STDIN_FILENO, &orig) < 0) {
         if (fgets(buf, max_len, stdin) == NULL) return -1;
         len = (int)strlen(buf);
@@ -65,12 +106,18 @@ int read_input(char *buf, int max_len)
         return len;
     }
 
-    /* 设置 raw 模式: 关闭行缓冲和回显 */
+    /* 【系统调用】tcsetattr() → 内核 ioctl(TCSETS)
+     * 设置 raw 模式:
+     *   关闭 ICANON: 内核不做行缓冲，每字符立即返回
+     *   关闭 ECHO  : 内核不自动回显，由 Shell 自己输出
+     *   VMIN=1     : 内核 read 最少返回 1 个字符
+     *   VTIME=0    : 无超时，无限阻塞等待输入
+     */
     raw = orig;
     raw.c_lflag &= ~(ICANON | ECHO);
     raw.c_cc[VMIN] = 1;
     raw.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);  /* 内核 ioctl(TCSETS) */
 
     buf[0] = '\0';
     char saved_line[MAX_LINE] = "";
@@ -95,10 +142,10 @@ int read_input(char *buf, int max_len)
             buf[0] = '\0';
             return 0;
         }
-        if (ch == '\r' || ch == '\n') { /* 回车 */
+        if (ch == '\r' || ch == '\n') { /* 回车: 结束输入 */
             printf("\n");
             buf[len] = '\0';
-            tcsetattr(STDIN_FILENO, TCSANOW, &orig);
+            tcsetattr(STDIN_FILENO, TCSANOW, &orig);  /* 恢复原始终端属性 */
             return len;
         }
         if (ch == 0x7F || ch == 0x08) { /* 退格 */
@@ -198,7 +245,8 @@ int read_input(char *buf, int max_len)
 /*
  * is_directory — 判断路径是否为目录
  * 功能: Tab 补全时给目录候选追加 '/'。
- * 实现: 调用 stat 并检查 S_ISDIR。
+ * 【系统调用】stat() → 内核 sys_newstat，获取文件元信息
+ *   S_ISDIR 宏检查 st_mode 中的文件类型位，由内核 VFS 层填充
  */
 static int is_directory(const char *path)
 {
@@ -209,8 +257,14 @@ static int is_directory(const char *path)
 /*
  * tab_complete — Tab 补全逻辑
  * 功能: 根据当前输入补全命令名、文件名或多级路径。
- * 实现: 判断是否在补全命令名;命令名搜索内置命令+PATH+当前目录;文件名解析
- *       目录部分与前缀并搜索;去重后单候选直接补全,多候选补公共前缀或列候选。
+ * 【与内核的关系】
+ *   - opendir/readdir/closedir → 内核 getdents64 系统调用，遍历目录条目
+ *   - stat() → 内核 sys_newstat，判断候选是否为目录
+ *   - getenv("PATH") → 读取环境变量，PATH 由内核在 execve 时传递给进程
+ * 【实现逻辑】
+ *   补全命令名: 内置命令(shell_builtin_names) + PATH 各目录 + 当前目录
+ *   补全文件名: 解析目录部分和前缀，搜索对应目录
+ *   单候选: 直接补全; 多候选: 补公共前缀或列出候选
  */
 void tab_complete(const char *prefix, char *buf, int *len, int *cursor)
 {

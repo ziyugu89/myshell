@@ -2,6 +2,32 @@
  * ============================================================================
  *  builtin.c — 内置命令模块
  * ============================================================================
+ *  操作系统课程设计作业
+ *
+ *  【文件定位】
+ *    内置命令分发器，在 Shell 父进程内直接执行，不需要 fork+exec。
+ *    这是与内核系统调用交互最密集的"业务逻辑"模块。
+ *
+ *  【与 Linux 内核的关系 — 各内置命令对应的系统调用】
+ *    cd     : chdir() → 内核 sys_chdir，修改进程的当前工作目录
+ *    pwd    : getcwd() → 内核 sys_getcwd，获取当前工作目录路径
+ *    echo   : printf/putchar → 内核 write(1,...)，写标准输出
+ *    type   : access() → 内核 sys_access，检查文件可执行权限(X_OK)
+ *    exit   : exit() → 内核 sys_exit_group，终止整个进程组
+ *    export : setenv() → 内核 sys_setenv(通过 /proc/self/environ)，设置环境变量
+ *    unset  : unsetenv() → 内核 sys_unsetenv，删除环境变量
+ *    jobs   : 纯用户态遍历作业表
+ *    fg/bg  : kill(SIGCONT) → 内核 sys_kill，waitpid → 内核 sys_wait4
+ *             tcsetpgrp → 内核 ioctl(TIOCSPGRP)
+ *    mount  : mount() → 内核 sys_mount，直接调用内核挂载系统调用(需root)
+ *    umount : umount() → 内核 sys_umount，直接调用内核卸载系统调用(需root)
+ *
+ *  【重要设计原则】
+ *    cd 必须在父进程执行！不能 fork，因为 chdir 只影响当前进程，
+ *    子进程 cd 后父进程目录不变。
+ *
+ *  @author  操作系统课程设计
+ * ============================================================================
  */
 
 #include "shell.h"
@@ -22,16 +48,29 @@ const char *const shell_builtin_names[] = {
 /*
  * builtin_cmd — 内置命令分发器
  * 功能: 根据 argv[0] 识别并执行对应内置命令; 若非内置命令返回 -1。
- * 实现: 用 strcmp 链式判断 argv[0], 分别调用 chdir/getcwd/printf/setenv/
- *       exit 等系统调用/库函数完成具体功能; history/alias/unalias 已在
- *       流程早期处理, 这里仅返回 0 占位避免被误判为外部命令。
+ * 返回值: -1=非内置(降级为外部命令); >=0=内置命令退出码
+ *
+ * 【各命令对应的内核系统调用】
+ *   cd     → chdir()  : 内核 sys_chdir
+ *   pwd    → getcwd() : 内核 sys_getcwd
+ *   echo   → printf   : 内核 write(1,...)
+ *   type   → access() : 内核 sys_access(X_OK)
+ *   exit   → exit()   : 内核 sys_exit_group
+ *   export → setenv() : 修改环境变量(影响 fork 的子进程)
+ *   unset  → unsetenv(): 删除环境变量
+ *   jobs/fg/bg → 委托给 background.c (kill/waitpid/tcsetpgrp)
+ *   mount/umount → 委托给 mount.c (内核 mount/umount 系统调用)
  */
 int builtin_cmd(char **argv, int argc, int bg)
 {
     (void)bg;
     if (argc == 0) return -1;
 
-    /* cd: 切换当前工作目录(必须在父进程执行,不能fork) */
+    /* cd: 切换当前工作目录
+     * 【必须】在父进程执行！chdir() 只影响当前进程，fork后子进程cd无效
+     * 【系统调用】chdir() → 内核 sys_chdir，修改进程的 CWD(当前工作目录)
+     * 【系统调用】getcwd() → 内核 sys_getcwd，保存旧目录到 OLDPWD
+     * 【系统调用】setenv() → 设置 OLDPWD 环境变量 */
     if (strcmp(argv[0], "cd") == 0) {
         const char *dir;
         static char cd_path[MAX_LINE];
@@ -61,10 +100,13 @@ int builtin_cmd(char **argv, int argc, int bg)
             dir = argv[1];
         }
 
+        /* 【系统调用】getcwd() → 内核 sys_getcwd，保存切换前的目录 */
         char oldcwd[MAX_LINE];
         if (getcwd(oldcwd, sizeof(oldcwd)))
-            setenv("OLDPWD", oldcwd, 1);
+            setenv("OLDPWD", oldcwd, 1);  /* 保存旧目录供 cd - 使用 */
 
+        /* 【系统调用】chdir() → 内核 sys_chdir
+         * 修改进程的当前工作目录，内核更新进程的 fs_struct->pwd */
         if (chdir(dir) != 0) {
             fprintf(stderr, "myshell: cd: %s: %s\n", dir, strerror(errno));
             return 1;
@@ -72,7 +114,9 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
-    /* pwd: 调用 getcwd 输出当前工作目录 */
+    /* pwd: 输出当前工作目录
+     * 【系统调用】getcwd() → 内核 sys_getcwd
+     *   内核从进程的 fs_struct->pwd 读取当前目录路径 */
     if (strcmp(argv[0], "pwd") == 0) {
         char cwd[MAX_LINE];
         if (getcwd(cwd, sizeof(cwd))) {
@@ -117,7 +161,11 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
-    /* type: 判断命令类型(别名→内置→外部),外部命令遍历PATH检查X_OK */
+    /* type: 判断命令类型(别名→内置→外部)
+     * 【系统调用】access(full, X_OK) → 内核 sys_access
+     *   检查文件是否可执行，内核检查 inode 的权限位和进程的有效 UID/GID
+     *   遍历 PATH 环境变量中每个目录，检查 dir/cmd 是否可执行
+     */
     if (strcmp(argv[0], "type") == 0) {
         if (argc < 2) {
             printf("myshell: type: 用法: type 命令名\n");
@@ -143,6 +191,7 @@ int builtin_cmd(char **argv, int argc, int bg)
             while (d) {
                 char full[MAX_LINE];
                 snprintf(full, sizeof(full), "%s/%s", d, argv[1]);
+                /* 【系统调用】access() → 内核 sys_access，检查文件可执行性 */
                 if (access(full, X_OK) == 0) {
                     strncpy(found, full, MAX_LINE - 1);
                     found[MAX_LINE - 1] = '\0';
@@ -156,7 +205,10 @@ int builtin_cmd(char **argv, int argc, int bg)
         return found[0] ? 0 : 1;
     }
 
-    /* exit: 保存历史后按指定退出码终止Shell进程 */
+    /* exit: 保存历史后按指定退出码终止 Shell 进程
+     * 【系统调用】exit() → 内核 sys_exit_group
+     *   内核释放进程资源(fd表、内存映射、信号队列)，终止整个进程组
+     *   Shell 调用 exit 后永远不会返回 */
     if (strcmp(argv[0], "exit") == 0) {
         int code = (argc >= 2) ? atoi(argv[1]) : 0;
         save_history();
@@ -164,7 +216,11 @@ int builtin_cmd(char **argv, int argc, int bg)
         exit(code);
     }
 
-    /* export: 设置/查看环境变量,通过 setenv 影响当前进程及子进程 */
+    /* export: 设置/查看环境变量
+     * 【库函数】setenv()/getenv() → 操作进程的环境变量空间
+     *   环境变量在内核 fork 时通过复制环境块传递给子进程
+     *   export KEY=VALUE 设置后，后续 fork 的子进程都能看到这个变量
+     */
     if (strcmp(argv[0], "export") == 0) {
         if (argc < 2) {
             for (char **e = environ; e && *e; e++)
@@ -186,7 +242,9 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
-    /* unset: 删除环境变量,调用 unsetenv */
+    /* unset: 删除环境变量
+     * 【库函数】unsetenv() → 从进程环境块中删除指定变量
+     *   影响当前进程及后续 fork 的子进程 */
     if (strcmp(argv[0], "unset") == 0) {
         if (argc < 2) {
             printf("myshell: unset: 用法: unset 变量名\n");
@@ -197,7 +255,11 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
-    /* jobs/fg/bg: 委托给 background.c 的作业控制函数 */
+    /* jobs/fg/bg: 委托给 background.c 的作业控制函数
+     * 这些命令涉及内核系统调用:
+     *   kill(-pgid, SIGCONT) → 内核 sys_kill，向进程组发信号
+     *   waitpid() → 内核 sys_wait4，等待子进程
+     *   tcsetpgrp() → 内核 ioctl(TIOCSPGRP)，切换前台进程组 */
     if (strcmp(argv[0], "jobs") == 0)
         return builtin_jobs(argv, argc);
     if (strcmp(argv[0], "fg") == 0)
@@ -205,7 +267,11 @@ int builtin_cmd(char **argv, int argc, int bg)
     if (strcmp(argv[0], "bg") == 0)
         return builtin_bg(argv, argc);
 
-    /* mount/umount: 委托给 mount.c 的挂载管理函数 */
+    /* mount/umount: 委托给 mount.c 的挂载管理函数
+     * 这些是直接调用内核的系统调用(不是用户态库封装):
+     *   mount()  → 内核 sys_mount，挂载文件系统
+     *   umount() → 内核 sys_umount，卸载文件系统
+     * 需要 root 权限(geteuid()==0) */
     if (strcmp(argv[0], "mount") == 0) {
         handle_mount(argv, argc);
         return 0;

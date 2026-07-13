@@ -21,7 +21,12 @@
 ## 编译与运行
 
 ```bash
-cd /mnt/c/Users/32130/Desktop/操作系统大设计    # WSL 实际路径
+# 方式 1: WSL 路径
+cd /mnt/c/Users/32130/Desktop/操作系统大设计
+
+# 方式 2: VMware 虚拟机共享文件夹路径
+# (先在 VMware 设置中把 Windows 项目目录设为共享文件夹)
+cd /mnt/hgfs/操作系统大设计
 
 make              # 标准编译
 make debug        # 带 -g 调试信息
@@ -35,19 +40,15 @@ exit              # 或 Ctrl+D 退出
 
 ## 注册为系统登录 Shell（可选）
 
-Linux 系统通过 `/etc/shells` 文件维护“合法登录 Shell”列表。若要让 myshell 被系统承认（例如通过 `chsh` 切换默认 Shell），需将其绝对路径写入该文件。
+Linux 系统通过 `/etc/shells` 文件维护"合法登录 Shell"列表。若要让 myshell 被系统承认（例如通过 `chsh` 切换默认 Shell），需将其绝对路径写入该文件。
 
 ### 步骤
 
 ```bash
-# 1. 将 myshell 安装到系统目录（推荐 /usr/local/bin）
-sudo cp ./myshell /usr/local/bin/myshell
-sudo chmod +x /usr/local/bin/myshell
+# 一条命令完成编译、安装、注册（需 sudo）
+sudo make install
 
-# 2. 注册到 /etc/shells
-echo "/usr/local/bin/myshell" | sudo tee -a /etc/shells
-
-# 3. 查看注册结果
+# 查看注册结果
 cat /etc/shells
 ```
 
@@ -67,7 +68,13 @@ chsh -s /usr/local/bin/myshell
 
 重新登录后，默认 Shell 即为 myshell。
 
-**注意**：修改 `/etc/shells` 和切换默认 Shell 均需要 root 或当前用户密码权限。
+### 卸载
+
+```bash
+sudo make uninstall    # 删除二进制 + 从 /etc/shells 移除
+```
+
+**注意**：`make install` / `make uninstall` 涉及系统文件修改，需要 root 或当前用户密码权限。
 
 ---
 
@@ -86,9 +93,7 @@ chsh -s /usr/local/bin/myshell
 | 引号/变量 | 解析与展开 | `'...'`、`"..."`、`$VAR`、`~/path` |
 | 通配符 | glob 展开 | `*.txt`、`test?.txt` |
 | 重定向 | stdin/stdout/stderr | `<`、`>`、`>>`、`2>`、`2>>`、`2>&1` |
-| Heredoc | HERE 文档 | `<< DELIM` |
 | 管道 | 单级/多级 | `cmd1 \| cmd2 \| ...` |
-| 复合命令 | 串联/条件 | `;`、`&&`、`||` |
 | 后台/作业 | 不阻塞执行 | `命令 &`、`| ... &` |
 | 行编辑 | 交互输入 | ↑↓←→、Tab、Ctrl+C/D/Z |
 
@@ -102,14 +107,12 @@ chsh -s /usr/local/bin/myshell
 用户输入
   → 历史展开 (history / !! / !n / !?关键词)
   → 别名展开 (递归 ≤10 层)
-  → Heredoc 收集 (<< DELIM)
-  → 复合命令拆分 (; / && / ||)
   → 单条命令执行:
       管道检测 → 分词 → ~/$VAR 展开 → glob 展开
       → 后台 & 检测 → 重定向解析 → 内置/外部执行
 ```
 
-该顺序是核心不变量：别名展开早于分词，因此别名中可以包含多个词或管道；Heredoc 在复合命令拆分之前收集，保证 `cmd << EOF; cmd2` 这类写法正确。
+该顺序是核心不变量：别名展开早于分词，因此别名中可以包含多个词或管道。
 
 ---
 
@@ -373,28 +376,6 @@ cat /tmp/t.all
 
 ---
 
-## Heredoc（`<<`）
-
-```bash
-cat << EOF
-第一行
-第二行
-EOF
-
-grep Linux << END
-Linux kernel
-open source
-END
-```
-
-**演示说明**：
-- 输入 `<< DELIM` 后，Shell 显示续行提示符 `heredoc>`，等待输入内容。
-- 当单独一行输入 `DELIM` 时结束收集。
-- 内容被写入临时文件 `/tmp/myshell_hd_<pid>`，然后作为标准输入重定向给命令执行。
-- 结束标记符不加引号时，Heredoc 内部会进行 `$VAR` 变量展开；若加引号则保持原样（本项目支持此语义）。
-
----
-
 ## 管道
 
 ### 基本管道
@@ -430,23 +411,6 @@ jobs                        # 整个管道作为一个作业
 ```
 
 **实现说明**：多级管道创建 `N-1` 个管道并 fork `N` 个子进程，每个子进程通过 `dup2` 连接 stdin/stdout。父进程关闭所有管道 fd 后逐个 `waitpid`。管道内每个命令段独立进行分词、glob、重定向解析。
-
----
-
-## 复合命令（`;` / `&&` / `||`）
-
-```bash
-echo first; echo second     # 顺序执行两条命令
-ls /tmp && echo exist       # 前一条成功（退出码 0）才执行后一条
-ls /notexist || echo fallback   # 前一条失败才执行后一条
-ls | grep x; echo done      # 可与管道组合
-```
-
-**实现说明**：
-- `;` 无条件顺序执行。
-- `&&` 前一条命令退出码为 0 才执行后一条。
-- `||` 前一条命令退出码非 0 才执行后一条。
-- 复合命令拆分发生在 Heredoc 收集之后，因此 Heredoc、管道、重定向可与之组合。
 
 ---
 
@@ -523,7 +487,7 @@ Tab 可补全的内置命令：`cd`、`pwd`、`echo`、`type`、`exit`、`histor
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 主控制 | main.c | 初始化、主循环、命令调度、全局变量定义 |
-| 解析 | parser.c | 分词、glob、heredoc、`;`/`&&`/`||` |
+| 解析 | parser.c | 分词、glob |
 | 执行 | executor.c | fork+execvp、管道、内置命令进管道、进程组 |
 | 内置 | builtin.c | 全部内置命令 |
 | 历史 | history.c | 环形缓冲、持久化、`!n` 展开 |
@@ -566,43 +530,40 @@ cd -
 # 3. 外部命令 + glob
 ls *.txt
 
-# 4. 重定向（覆盖、追加、stderr）
+# 4. grep 外部命令
+grep Linux test3.txt
+grep -i linux test3.txt
+grep -n Linux test3.txt
+grep -c Linux test3.txt
+grep Linux test3.txt | grep open
+
+# 5. 重定向（覆盖、追加、stderr）
 echo "a" > /tmp/t.out
 echo "b" >> /tmp/t.out
 cat /tmp/t.out
 ls /notexist 2>/tmp/t.err
 cat /tmp/t.err
 
-# 5. 管道（含内置命令参与管道）
+# 6. 管道（含内置命令参与管道）
 echo hi | grep hi
 echo built_in | cat
 
-# 6. 复合命令
-ls /tmp && echo AND_OK
-ls /notexist || echo OR_OK
-echo one; echo two
-
-# 7. Heredoc
-cat << EOF
-heredoc line
-EOF
-
-# 8. 别名
+# 7. 别名
 alias ll='ls -la'
 type ll
 ll
 unalias ll
 
-# 9. 历史
+# 8. 历史
 history
 !!
 
-# 10. 后台作业
+# 9. 后台作业
 sleep 2 &
 jobs
 # 等待 2 秒后，下一次提示符前会显示完成信息
 
-# 11. 挂载管理
+# 10. 挂载管理
 #    无参数 mount 可查看当前挂载列表（无需 root）
 mount | head -5
 
@@ -617,18 +578,20 @@ mount | head -5
 #    若挂载真实块设备（如 U 盘），需将 tmpfs 换成实际设备路径：
 # mount /dev/sdb1 /mnt/usb vfat
 
-# 12. 命令类型识别
+# 11. 命令类型识别
 type export
 type ls
 
-# 13. 退出 myshell
+# 12. 退出 myshell
 exit
 
-# 14. 注册为系统登录 Shell（在 bash 中执行，非 myshell 内）
-# sudo cp ./myshell /usr/local/bin/myshell
-# sudo chmod +x /usr/local/bin/myshell
-# echo "/usr/local/bin/myshell" | sudo tee -a /etc/shells
-# grep "myshell" /etc/shells
+# 13. 注册为系统登录 Shell（在 bash 中执行，非 myshell 内）
+# sudo make install          # 编译 + 安装到 /usr/local/bin + 注册到 /etc/shells
+# grep "myshell" /etc/shells # 验证注册成功
+# chsh -s /usr/local/bin/myshell  # （可选）设为默认 Shell
+#
+# 卸载：
+# sudo make uninstall        # 删除二进制 + 从 /etc/shells 移除
 ```
 
 ---
