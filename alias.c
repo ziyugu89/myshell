@@ -43,9 +43,12 @@ int alias_handle(const char *line, char *expanded, int depth)
 {
     char first[128]; int i = 0;
     while (line[i]==' '||line[i]=='\t') i++;
+    /* 提取第一个词 */
     int j = 0;
     while (line[i] && line[i]!=' ' && line[i]!='\t' && j<127) first[j++]=line[i++];
     first[j] = '\0';
+    
+    /* rest 指向第一个词后面的内容 */
     const char *rest = line + i;
     while (*rest==' '||*rest=='\t') rest++;
 

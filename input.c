@@ -272,6 +272,8 @@ void tab_complete(const char *prefix, char *buf, int *len, int *cursor)
     int cc = 0;
     int completing_cmd = (strchr(buf, ' ') == NULL);
     const char *search_prefix = prefix;
+    /* 如果输入中没有空格 → 正在输入命令名 → 补全命令名
+     * 如果输入中有空格 → 正在输入参数 → 补全文件名/路径 */
 
     if (completing_cmd) {
         /* ---- 补全命令名: 先加入内置命令, 再搜索 PATH 和当前目录 ---- */

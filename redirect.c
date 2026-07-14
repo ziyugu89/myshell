@@ -72,6 +72,7 @@ int redirect_parse(char **argv, int *argc, redirect_t *r)
     redirect_init(r);
     int i = 0;
     while (i < *argc) {
+        /* >> 输出重定向，追加内容到文件末尾 */
         if (strcmp(argv[i], ">>") == 0) {
             if (i + 1 >= *argc) {
                 printf("myshell: '>>' 后缺少文件名\n");
@@ -82,6 +83,7 @@ int redirect_parse(char **argv, int *argc, redirect_t *r)
             remove_argv_at(argv, argc, i, 2);
             continue;
         }
+        /* > 输出重定向，覆盖文件内容 */
         if (strcmp(argv[i], ">") == 0) {
             if (i + 1 >= *argc) {
                 printf("myshell: '>' 后缺少文件名\n");
@@ -92,6 +94,7 @@ int redirect_parse(char **argv, int *argc, redirect_t *r)
             remove_argv_at(argv, argc, i, 2);
             continue;
         }
+        /* 2>> 错误输出重定向，追加内容到文件末尾 */
         if (strcmp(argv[i], "2>>") == 0) {
             if (i + 1 >= *argc) {
                 printf("myshell: '2>>' 后缺少文件名\n");
@@ -102,6 +105,7 @@ int redirect_parse(char **argv, int *argc, redirect_t *r)
             remove_argv_at(argv, argc, i, 2);
             continue;
         }
+        /* 2> 错误输出重定向，覆盖文件内容 */
         if (strcmp(argv[i], "2>") == 0) {
             if (i + 1 >= *argc) {
                 printf("myshell: '2>' 后缺少文件名\n");
@@ -112,23 +116,27 @@ int redirect_parse(char **argv, int *argc, redirect_t *r)
             remove_argv_at(argv, argc, i, 2);
             continue;
         }
+        /* 2>> 错误输出重定向，追加内容到文件末尾 */
         if (strncmp(argv[i], "2>>", 3) == 0 && argv[i][3] != '\0') {
             r->err_file = argv[i] + 3;
             r->append_err = 1;
             remove_argv_at(argv, argc, i, 1);
             continue;
         }
+        /* 2> 错误输出重定向，覆盖文件内容 */
         if (strncmp(argv[i], "2>", 2) == 0 && argv[i][2] != '\0') {
             r->err_file = argv[i] + 2;
             r->append_err = 0;
             remove_argv_at(argv, argc, i, 1);
             continue;
         }
+        /* 2>&1 错误输出重定向，指向标准输出 */
         if (strcmp(argv[i], "2>&1") == 0) {
             r->err_to_out = 1;
             remove_argv_at(argv, argc, i, 1);
             continue;
         }
+        /* < 输入重定向，从文件读取数据 */
         if (strcmp(argv[i], "<") == 0) {
             if (i + 1 >= *argc) {
                 printf("myshell: '<' 后缺少文件名\n");

@@ -124,6 +124,8 @@ static int run_simple(char **argv, int argc, int bg, redirect_t *rd)
     int need_restore = 0;
     int status = 0;
 
+    /* 处理重定向，保存原 fd */
+    /* 如果有重定向符，则进行重定向处理 */
     if (rd->in_file || rd->out_file || rd->err_file || rd->err_to_out) {
         if (redirect_apply_with_save(rd, &saved_in, &saved_out, &saved_err) < 0)
             return 1;
@@ -131,6 +133,8 @@ static int run_simple(char **argv, int argc, int bg, redirect_t *rd)
     }
 
     int bi = builtin_cmd(argv, argc, bg);
+    /* 如果是 cd、pwd、echo 等内置命令，不需要 fork，
+    直接在 Shell 进程内执行。执行完恢复 fd，返回退出码。 */
     if (bi >= 0) {
         status = bi;
         if (need_restore)
@@ -166,6 +170,8 @@ static int run_simple(char **argv, int argc, int bg, redirect_t *rd)
 
     if (bg) {
         /* 【系统调用】setpgid() → 内核 sys_setpgid，后台命令放入独立进程组 */
+        /* 如果命令末尾有 &（后台），父进程不等子进程，记录一下就返回。
+         * 子进程在后台自己跑，结束后由 reap_children 回收。*/
         setpgid(pid, pid);
         pid_t jpids[1] = { pid };
         char desc[MAX_LINE];
@@ -233,6 +239,7 @@ static int pipe_exec(char *line, int bg)
     char *p = line;
     cmd_segs[num_cmds++] = p;
 
+    /* 分离命令段 */
     int in_sq = 0, in_dq = 0;
     for (char *q = p; *q; q++) {
         if (*q == '\'' && !in_dq) in_sq = !in_sq;
@@ -248,6 +255,7 @@ static int pipe_exec(char *line, int bg)
         }
     }
 
+    /* 检查每段命令 */
     for (int i = 0; i < num_cmds; i++) {
         char *tmp[MAX_ARGS];
         if (split_cmd(cmd_segs[i], tmp, MAX_ARGS) == 0) {
