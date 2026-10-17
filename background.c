@@ -25,7 +25,7 @@
  *    reap_children()    — 非阻塞回收所有已结束子进程
  *    flush_bg_messages()— 延迟输出后台完成消息
  *    bg_run/bg_run_line — 检测后台标志 &
- *    builtin_jobs/fg/bg — 作业控制内置命令实现
+ *    builtin_jobs/fg/bg/kill/wait — 作业控制内置命令实现
  *
  *  @author  操作系统课程设计
  * ============================================================================
@@ -388,4 +388,169 @@ int builtin_bg(char **argv, int argc)
     job->stopped = 0;
     printf("[%d] %s\n", job->id, job->cmd);
     return 0;
+}
+
+/*
+ * parse_signal — 解析 kill 的信号参数
+ * 支持: -9/-KILL/-SIGKILL、数字信号、常见名称 TERM/INT/STOP/CONT
+ */
+static int parse_signal(const char *arg, int *sig)
+{
+    if (!arg || arg[0] != '-' || arg[1] == '\0')
+        return -1;
+
+    const char *s = arg + 1;
+    if (strcmp(s, "9") == 0 || strcmp(s, "KILL") == 0 || strcmp(s, "SIGKILL") == 0)
+        *sig = SIGKILL;
+    else if (strcmp(s, "15") == 0 || strcmp(s, "TERM") == 0 || strcmp(s, "SIGTERM") == 0)
+        *sig = SIGTERM;
+    else if (strcmp(s, "2") == 0 || strcmp(s, "INT") == 0 || strcmp(s, "SIGINT") == 0)
+        *sig = SIGINT;
+    else if (strcmp(s, "19") == 0 || strcmp(s, "STOP") == 0 || strcmp(s, "SIGSTOP") == 0)
+        *sig = SIGSTOP;
+    else if (strcmp(s, "18") == 0 || strcmp(s, "CONT") == 0 || strcmp(s, "SIGCONT") == 0)
+        *sig = SIGCONT;
+    else {
+        char *end = NULL;
+        long n = strtol(s, &end, 10);
+        if (!end || *end != '\0' || n < 1 || n > 64)
+            return -1;
+        *sig = (int)n;
+    }
+    return 0;
+}
+
+/*
+ * wait_one_job — 阻塞等待一个作业的全部进程结束并移出作业表
+ * 【系统调用】waitpid() → 内核 sys_wait4
+ * 故意 wait 时不入 bg_msg_queue（与 fg 一致，避免重复提示）
+ */
+static int wait_one_job(struct job_entry *job)
+{
+    int status = 0;
+    pid_t pgid = job->pgid;
+    for (int k = 0; k < job->npids; k++) {
+        if (job->pids[k] <= 0)
+            continue;
+        int st = 0;
+        pid_t w;
+        do {
+            w = waitpid(job->pids[k], &st, 0);
+        } while (w < 0 && errno == EINTR);
+        if (w > 0)
+            status = st;
+    }
+    job_remove_by_pgid(pgid);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
+
+/*
+ * builtin_kill — 向 PID 或作业进程组发送信号
+ * 用法: kill [-信号] <pid|%作业号>
+ * 【系统调用】kill(pid, sig) / kill(-pgid, sig) → 内核 sys_kill
+ */
+int builtin_kill(char **argv, int argc)
+{
+    int sig = SIGTERM;
+    int argi = 1;
+
+    if (argc < 2) {
+        printf("myshell: kill: 用法: kill [-信号] <pid|%%作业号>\n");
+        return 1;
+    }
+
+    if (argv[1][0] == '-') {
+        if (parse_signal(argv[1], &sig) < 0) {
+            printf("myshell: kill: %s: 无效信号\n", argv[1]);
+            return 1;
+        }
+        argi = 2;
+        if (argi >= argc) {
+            printf("myshell: kill: 用法: kill [-信号] <pid|%%作业号>\n");
+            return 1;
+        }
+    }
+
+    const char *target = argv[argi];
+    if (target[0] == '%') {
+        int id = 0;
+        if (parse_job_id(target, &id) < 0) {
+            printf("myshell: kill: %s: 无此作业\n", target);
+            return 1;
+        }
+        struct job_entry *job = job_find_by_id(id);
+        if (!job) {
+            printf("myshell: kill: %s: 无此作业\n", target);
+            return 1;
+        }
+        if (kill(-job->pgid, sig) < 0) {
+            fprintf(stderr, "myshell: kill: %s: %s\n", target, strerror(errno));
+            return 1;
+        }
+        return 0;
+    }
+
+    char *end = NULL;
+    long pid = strtol(target, &end, 10);
+    if (!end || *end != '\0' || pid <= 0) {
+        printf("myshell: kill: %s: 无效的 pid 或作业号\n", target);
+        return 1;
+    }
+    if (kill((pid_t)pid, sig) < 0) {
+        fprintf(stderr, "myshell: kill: %s: %s\n", target, strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * builtin_wait — 阻塞等待后台作业结束
+ * 用法: wait | wait %N | wait <pid>
+ * 【系统调用】waitpid() → 内核 sys_wait4
+ */
+int builtin_wait(char **argv, int argc)
+{
+    if (argc < 2) {
+        int last = 0;
+        while (job_count > 0)
+            last = wait_one_job(&job_table[0]);
+        return last;
+    }
+
+    const char *target = argv[1];
+    if (target[0] == '%') {
+        int id = 0;
+        if (parse_job_id(target, &id) < 0) {
+            printf("myshell: wait: %s: 无此作业\n", target);
+            return 1;
+        }
+        struct job_entry *job = job_find_by_id(id);
+        if (!job) {
+            printf("myshell: wait: %s: 无此作业\n", target);
+            return 1;
+        }
+        return wait_one_job(job);
+    }
+
+    char *end = NULL;
+    long pid = strtol(target, &end, 10);
+    if (!end || *end != '\0' || pid <= 0) {
+        printf("myshell: wait: %s: 无效的 pid 或作业号\n", target);
+        return 1;
+    }
+
+    struct job_entry *job = job_find_by_pid((pid_t)pid);
+    if (job)
+        return wait_one_job(job);
+
+    int status = 0;
+    pid_t w;
+    do {
+        w = waitpid((pid_t)pid, &status, 0);
+    } while (w < 0 && errno == EINTR);
+    if (w < 0) {
+        fprintf(stderr, "myshell: wait: %s: %s\n", target, strerror(errno));
+        return 1;
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }

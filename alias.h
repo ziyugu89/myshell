@@ -15,4 +15,10 @@
 /* 别名管理与递归展开, 返回1表示已作为alias/unalias命令处理 */
 int alias_handle(const char *line, char *expanded, int depth);
 
+/* 启动时从 ~/.myshell_alias 加载别名 */
+void load_alias(void);
+
+/* 将别名表覆盖写入 ~/.myshell_alias */
+void save_alias(void);
+
 #endif /* ALIAS_H */

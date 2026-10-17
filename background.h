@@ -23,5 +23,7 @@ void job_remove_by_pgid(pid_t pgid);
 int builtin_jobs(char **argv, int argc);
 int builtin_fg(char **argv, int argc);
 int builtin_bg(char **argv, int argc);
+int builtin_kill(char **argv, int argc);
+int builtin_wait(char **argv, int argc);
 
 #endif /* BACKGROUND_H */

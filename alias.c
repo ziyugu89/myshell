@@ -6,7 +6,7 @@
  *
  *  【文件定位】
  *    别名管理与递归展开层，在命令处理流水线的第二步执行。
- *    别名仅存储在内存中(alias_table)，进程退出即丢失。
+ *    别名存于 alias_table，持久化到 ~/.myshell_alias (name=value 格式)。
  *
  *  【与 Linux 内核的关系】
  *    本模块不涉及任何系统调用，纯用户态字符串操作。
@@ -25,6 +25,76 @@
 
 #include "shell.h"
 #include "alias.h"
+
+/*
+ * load_alias — 启动时加载别名
+ * 功能: 从 ~/.myshell_alias 读取 name=value 键值对到 alias_table。
+ */
+void load_alias(void)
+{
+    const char *home = getenv("HOME");
+    if (!home) return;
+
+    char path[MAX_LINE];
+    snprintf(path, sizeof(path), "%s/%s", home, ALIAS_FILE);
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) return;
+
+    char line[MAX_LINE];
+    while (fgets(line, sizeof(line), fp) && alias_count < MAX_ALIAS) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n')
+            line[--len] = '\0';
+        if (len == 0) continue;
+
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *name = line;
+        char *val = eq + 1;
+        if (*name == '\0') continue;
+
+        size_t vl = strlen(val);
+        if (vl >= 2 && val[0] == '\'' && val[vl - 1] == '\'') {
+            val[vl - 1] = '\0';
+            val++;
+        }
+        vl = strlen(val);
+        if (vl >= 2 && val[0] == '"' && val[vl - 1] == '"') {
+            val[vl - 1] = '\0';
+            val++;
+        }
+
+        strncpy(alias_table[alias_count].name, name, 127);
+        alias_table[alias_count].name[127] = '\0';
+        strncpy(alias_table[alias_count].value, val, 511);
+        alias_table[alias_count].value[511] = '\0';
+        alias_count++;
+    }
+    fclose(fp);
+}
+
+/*
+ * save_alias — 保存别名到文件
+ * 功能: 将 alias_table 以 name=value 格式覆盖写入 ~/.myshell_alias。
+ */
+void save_alias(void)
+{
+    const char *home = getenv("HOME");
+    if (!home) return;
+
+    char path[MAX_LINE];
+    snprintf(path, sizeof(path), "%s/%s", home, ALIAS_FILE);
+
+    FILE *fp = fopen(path, "w");
+    if (!fp) return;
+
+    for (int i = 0; i < alias_count; i++)
+        fprintf(fp, "%s=%s\n", alias_table[i].name, alias_table[i].value);
+
+    fclose(fp);
+}
 
 /*
  * alias_handle — 别名管理与递归展开
@@ -74,7 +144,9 @@ int alias_handle(const char *line, char *expanded, int depth)
             for (int k=0; k<alias_count; k++)
                 if (strcmp(alias_table[k].name, name)==0) {
                     strncpy(alias_table[k].value, val, 511);
-                    alias_table[k].value[511]='\0'; return 1;
+                    alias_table[k].value[511]='\0';
+                    save_alias();
+                    return 1;
                 }
             if (alias_count >= MAX_ALIAS) {
                 printf("myshell: alias: 别名数量已达上限 (%d)\n", MAX_ALIAS); return 1;
@@ -85,6 +157,7 @@ int alias_handle(const char *line, char *expanded, int depth)
             strncpy(alias_table[alias_count].value, val, 511);
             alias_table[alias_count].value[511]='\0';
             alias_count++;
+            save_alias();
         }
         return 1;
     }
@@ -97,7 +170,10 @@ int alias_handle(const char *line, char *expanded, int depth)
         nm[k]='\0';
         for (k=0; k<alias_count; k++)
             if (strcmp(alias_table[k].name, nm)==0) {
-                alias_table[k]=alias_table[alias_count-1]; alias_count--; return 1;
+                alias_table[k]=alias_table[alias_count-1];
+                alias_count--;
+                save_alias();
+                return 1;
             }
         printf("myshell: unalias: %s: 未找到该别名\n", nm); return 1;
     }

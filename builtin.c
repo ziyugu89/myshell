@@ -19,6 +19,9 @@
  *    jobs   : 纯用户态遍历作业表
  *    fg/bg  : kill(SIGCONT) → 内核 sys_kill，waitpid → 内核 sys_wait4
  *             tcsetpgrp → 内核 ioctl(TIOCSPGRP)
+ *    kill   : kill() → 内核 sys_kill，向 PID 或作业进程组发信号
+ *    wait   : waitpid() → 内核 sys_wait4，阻塞等待后台作业结束
+ *    help   : 纯用户态，列出内置命令说明
  *    mount  : mount() → 内核 sys_mount，直接调用内核挂载系统调用(需root)
  *    umount : umount() → 内核 sys_umount，直接调用内核卸载系统调用(需root)
  *
@@ -33,6 +36,7 @@
 #include "shell.h"
 #include "builtin.h"
 #include "history.h"
+#include "alias.h"
 #include "mount.h"
 #include "background.h"
 
@@ -40,9 +44,35 @@ extern char **environ;
 
 const char *const shell_builtin_names[] = {
     "cd", "pwd", "echo", "type", "exit", "history", "alias", "unalias",
-    "export", "unset", "jobs", "fg", "bg",
+    "export", "unset", "jobs", "fg", "bg", "kill", "wait", "help",
     "mount", "umount",
     NULL
+};
+
+/* help 命令说明表（与 shell_builtin_names 对应） */
+static const struct {
+    const char *name;
+    const char *desc;
+} help_table[] = {
+    {"cd",      "切换当前工作目录"},
+    {"pwd",     "显示当前工作目录"},
+    {"echo",    "输出文本（支持 -n 与转义）"},
+    {"type",    "判断命令类型（别名/内置/外部）"},
+    {"exit",    "退出 Shell"},
+    {"history", "显示历史命令"},
+    {"alias",   "定义或列出别名"},
+    {"unalias", "删除别名"},
+    {"export",  "设置或查看环境变量"},
+    {"unset",   "删除环境变量"},
+    {"jobs",    "列出后台/停止作业"},
+    {"fg",      "将作业调到前台"},
+    {"bg",      "让已停止作业在后台继续运行"},
+    {"kill",    "向 PID 或作业发送信号"},
+    {"wait",    "等待后台作业结束"},
+    {"help",    "显示内置命令帮助"},
+    {"mount",   "挂载文件系统或查看挂载列表"},
+    {"umount",  "卸载文件系统"},
+    {NULL, NULL}
 };
 
 /*
@@ -58,7 +88,8 @@ const char *const shell_builtin_names[] = {
  *   exit   → exit()   : 内核 sys_exit_group
  *   export → setenv() : 修改环境变量(影响 fork 的子进程)
  *   unset  → unsetenv(): 删除环境变量
- *   jobs/fg/bg → 委托给 background.c (kill/waitpid/tcsetpgrp)
+ *   jobs/fg/bg/kill/wait → 委托给 background.c (kill/waitpid/tcsetpgrp)
+ *   help → 用户态帮助
  *   mount/umount → 委托给 mount.c (内核 mount/umount 系统调用)
  */
 int builtin_cmd(char **argv, int argc, int bg)
@@ -212,6 +243,7 @@ int builtin_cmd(char **argv, int argc, int bg)
     if (strcmp(argv[0], "exit") == 0) {
         int code = (argc >= 2) ? atoi(argv[1]) : 0;
         save_history();
+        save_alias();
         printf("exit\n");
         exit(code);
     }
@@ -255,9 +287,9 @@ int builtin_cmd(char **argv, int argc, int bg)
         return 0;
     }
 
-    /* jobs/fg/bg: 委托给 background.c 的作业控制函数
+    /* jobs/fg/bg/kill/wait: 委托给 background.c 的作业控制函数
      * 这些命令涉及内核系统调用:
-     *   kill(-pgid, SIGCONT) → 内核 sys_kill，向进程组发信号
+     *   kill(-pgid, SIG) → 内核 sys_kill，向进程组发信号
      *   waitpid() → 内核 sys_wait4，等待子进程
      *   tcsetpgrp() → 内核 ioctl(TIOCSPGRP)，切换前台进程组 */
     if (strcmp(argv[0], "jobs") == 0)
@@ -266,6 +298,29 @@ int builtin_cmd(char **argv, int argc, int bg)
         return builtin_fg(argv, argc);
     if (strcmp(argv[0], "bg") == 0)
         return builtin_bg(argv, argc);
+    if (strcmp(argv[0], "kill") == 0)
+        return builtin_kill(argv, argc);
+    if (strcmp(argv[0], "wait") == 0)
+        return builtin_wait(argv, argc);
+
+    /* help: 列出内置命令说明（纯用户态） */
+    if (strcmp(argv[0], "help") == 0) {
+        if (argc < 2) {
+            printf("myshell 内置命令:\n");
+            for (int i = 0; help_table[i].name; i++)
+                printf("  %-10s %s\n", help_table[i].name, help_table[i].desc);
+            printf("输入 help <命令> 查看单条说明。\n");
+            return 0;
+        }
+        for (int i = 0; help_table[i].name; i++) {
+            if (strcmp(argv[1], help_table[i].name) == 0) {
+                printf("%s — %s\n", help_table[i].name, help_table[i].desc);
+                return 0;
+            }
+        }
+        printf("myshell: help: %s: 未知内置命令\n", argv[1]);
+        return 1;
+    }
 
     /* mount/umount: 委托给 mount.c 的挂载管理函数
      * 这些是直接调用内核的系统调用(不是用户态库封装):

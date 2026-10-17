@@ -49,7 +49,7 @@
 char history_list[MAX_HISTORY][MAX_LINE]; /* 历史命令环形缓冲区 */
 int  history_count = 0;                   /* 已记录的历史命令总数(包含已覆盖的) */
 
-struct alias_entry alias_table[MAX_ALIAS]; /* 别名表(仅内存，退出丢失) */
+struct alias_entry alias_table[MAX_ALIAS]; /* 别名表，持久化到 ~/.myshell_alias */
 int alias_count = 0;                       /* 当前别名数量 */
 
 struct bg_job_msg bg_msg_queue[MAX_BG_MSG]; /* 后台完成消息延迟输出队列 */
@@ -145,6 +145,7 @@ int main(void)
     signal(SIGTTIN, SIG_IGN);          /* 后台读终端: 忽略 */
 
     load_history();  /* 从 ~/.myshell_history 加载上次会话的历史命令 */
+    load_alias();    /* 从 ~/.myshell_alias 加载别名 */
 
     printf("====================================\n");
     printf("  欢迎使用 myshell 简易命令解释器\n");
@@ -165,7 +166,7 @@ int main(void)
         print_prompt();               /* 打印提示符 */
 
         int len = read_input(input_buf, MAX_LINE);    /* termios raw 模式读取 */
-        if (len < 0) { save_history(); printf("exit\n"); break; }  /* Ctrl+D: 保存历史后退出 */
+        if (len < 0) { save_history(); save_alias(); printf("exit\n"); break; }
         if (len == 0) continue;                                   /* 空行: 跳过 */
 
         process_command(input_buf);    /* 命令处理流水线 */

@@ -76,6 +76,8 @@ sudo make uninstall    # 删除二进制 + 从 /etc/shells 移除
 
 **注意**：`make install` / `make uninstall` 涉及系统文件修改，需要 root 或当前用户密码权限。
 
+**重要**：若已用 `chsh` 把 myshell 设为登录 Shell，源码改完并 `make` 之后，还必须再执行一次 `sudo make install`，才会更新 `/usr/local/bin/myshell`。只 `make` 只会更新项目目录下的 `./myshell`；当前已打开的登录会话也不会自动换成新二进制，需要 `exit` 后重新进入 WSL。
+
 ---
 
 ## 功能总览
@@ -83,10 +85,10 @@ sudo make uninstall    # 删除二进制 + 从 /etc/shells 移除
 | 类别 | 功能 | 命令/语法 |
 |------|------|-----------|
 | 内置命令 | 目录操作 | `cd`、`pwd` |
-| 内置命令 | 输出/类型/退出 | `echo`、`type`、`exit` |
+| 内置命令 | 输出/类型/退出/帮助 | `echo`、`type`、`exit`、`help` |
 | 内置命令 | 历史/别名 | `history`、`alias`、`unalias` |
 | 内置命令 | 环境变量 | `export`、`unset` |
-| 内置命令 | 作业控制 | `jobs`、`fg`、`bg` |
+| 内置命令 | 作业控制 | `jobs`、`fg`、`bg`、`kill`、`wait` |
 | 内置命令 | 挂载管理 | `mount`、`umount` |
 | 外部命令 | 系统程序 | `ls`、`cat`、`grep` 等 |
 | 历史展开 | 快速重复 | `!!`、`!n`、`!?关键词` |
@@ -262,6 +264,46 @@ bg %1                       # 恢复编号 1 的作业到后台
 - `fg` 会把终端前台控制权交给作业进程组，`waitpid` 结束后收回。
 - `bg` 向停止的作业进程组发送 `SIGCONT` 继续运行。
 - 整个管道（如 `sleep 5 | cat &`）作为一个作业加入作业表。
+
+---
+
+### `kill` — 向进程/作业发送信号
+
+```bash
+sleep 100 &                 # 启动后台作业
+jobs                        # 查看作业编号
+kill %1                     # 向作业 1 的进程组发送 SIGTERM
+kill -9 %1                  # 发送 SIGKILL
+kill -15 12345              # 向指定 PID 发送 SIGTERM
+kill -INT %1                # 发送 SIGINT（也可用 -2）
+```
+
+**实现说明**：调用 `kill()` 系统调用。目标为 `%N` 时对作业进程组发送信号（`kill(-pgid, sig)`），与 `fg`/`bg` 一致；目标为数字时向该 PID 发送。默认信号为 `SIGTERM`，支持 `-9`/`-KILL`、`-15`/`-TERM`、`-2`/`-INT` 以及数字信号。
+
+---
+
+### `wait` — 等待后台作业结束
+
+```bash
+sleep 2 &
+sleep 3 &
+wait                        # 等待当前全部后台作业结束
+sleep 5 &
+wait %1                     # 等待指定作业
+```
+
+**实现说明**：通过阻塞 `waitpid` 等待作业内各进程结束，并从作业表移除。无参数时等待全部作业；`wait %N` 等待指定作业；`wait <pid>` 等待指定 PID（若属于某作业则等待整个作业）。
+
+---
+
+### `help` — 显示内置命令帮助
+
+```bash
+help                        # 列出全部内置命令及简述
+help kill                   # 查看单个命令说明
+```
+
+**实现说明**：纯用户态输出，便于课堂演示时快速对照已实现的内置命令。
 
 ---
 
@@ -444,7 +486,7 @@ jobs                        # 管道作业
 | Ctrl+D | 空行时退出 Shell |
 | Ctrl+Z | 停止前台作业（配合 `bg`/`fg`） |
 
-Tab 可补全的内置命令：`cd`、`pwd`、`echo`、`type`、`exit`、`history`、`alias`、`unalias`、`export`、`unset`、`jobs`、`fg`、`bg`、`mount`、`umount`。
+Tab 可补全的内置命令：`cd`、`pwd`、`echo`、`type`、`exit`、`history`、`alias`、`unalias`、`export`、`unset`、`jobs`、`fg`、`bg`、`kill`、`wait`、`help`、`mount`、`umount`。
 
 ---
 
@@ -537,33 +579,42 @@ grep -n Linux test3.txt
 grep -c Linux test3.txt
 grep Linux test3.txt | grep open
 
-# 5. 重定向（覆盖、追加、stderr）
+# 5. sort / wc 外部命令
+sort test2.txt
+sort -r test2.txt
+cat test3.txt | wc -l
+ls *.txt | wc -l
+
+# 6. 重定向（覆盖、追加、stderr）
 echo "a" > /tmp/t.out
 echo "b" >> /tmp/t.out
 cat /tmp/t.out
 ls /notexist 2>/tmp/t.err
 cat /tmp/t.err
 
-# 6. 管道（含内置命令参与管道）
+# 7. 管道（含内置命令参与管道）
 echo hi | grep hi
-echo built_in | cat
+cat test3.txt | grep Linux > result.txt
+cat test3.txt | grep Linux | grep open
 
-# 7. 别名
+# 8. 别名
 alias ll='ls -la'
 type ll
 ll
 unalias ll
+cat ~/.myshell_alias 
 
-# 8. 历史
+# 9. 历史
 history
 !!
+cat ~/.myshell_history
 
-# 9. 后台作业
+# 10. 后台作业
 sleep 2 &
 jobs
 # 等待 2 秒后，下一次提示符前会显示完成信息
 
-# 10. 挂载管理
+# 11. 挂载管理
 #    无参数 mount 可查看当前挂载列表（无需 root）
 mount | head -5
 
@@ -578,14 +629,24 @@ mount | head -5
 #    若挂载真实块设备（如 U 盘），需将 tmpfs 换成实际设备路径：
 # mount /dev/sdb1 /mnt/usb vfat
 
-# 11. 命令类型识别
+# 12. 命令类型识别
 type export
 type ls
 
-# 12. 退出 myshell
+# 13. kill / wait / help
+help
+help kill
+sleep 30 &
+jobs
+kill %1
+sleep 2 &
+wait
+jobs
+
+# 14. 退出 myshell
 exit
 
-# 13. 注册为系统登录 Shell（在 bash 中执行，非 myshell 内）
+# 15. 注册为系统登录 Shell（在 bash 中执行，非 myshell 内）
 # sudo make install          # 编译 + 安装到 /usr/local/bin + 注册到 /etc/shells
 # grep "myshell" /etc/shells # 验证注册成功
 # chsh -s /usr/local/bin/myshell  # （可选）设为默认 Shell

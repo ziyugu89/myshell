@@ -65,6 +65,7 @@
 #define MAX_ALIAS_DEPTH 10   /* 别名递归展开最大深度 */
 #define MAX_JOBS      32     /* 最大作业数 */
 #define HISTORY_FILE  ".myshell_history"  /* 历史命令持久化文件名 */
+#define ALIAS_FILE    ".myshell_alias"    /* 别名持久化文件名 */
 
 /* ======================== 结构体 ========================
  * 以下结构体定义了 Shell 运行时的核心数据结构
@@ -74,7 +75,7 @@
  * 别名条目 (alias):
  *   name  — 别名, 如 "ll"
  *   value — 原命令, 如 "ls -l"
- *   【纯用户态数据结构】不涉及内核，存储在进程堆内存中，退出即丢失
+ *   【纯用户态数据结构】不涉及内核，运行时存于 alias_table，持久化到 ~/.myshell_alias
  */
 struct alias_entry {
     char name[128];
